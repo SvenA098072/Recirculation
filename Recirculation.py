@@ -36,7 +36,6 @@ def residence_time_sup_exh(experimentno=16, deviceno=1, periodtime=120, plot=Fal
     # sys.path.append("C:/Users/Devineni/OneDrive - bwedu/4_Recirculation/python_files/")  
     from Outdoor_CO2 import outdoor # This function calculates the outdoor CO2 data
     
-
     #%% Control plot properties"
     """This syntax controls the plot properties(default plot font, shape, etc), 
         more attributes can be added and removed depending on the requirement """
@@ -48,125 +47,6 @@ def residence_time_sup_exh(experimentno=16, deviceno=1, periodtime=120, plot=Fal
     plt.rcParams["font.size"] = 10
     	
     plt.close("all")
-
-    df = df.loc[~df.duplicated(subset=["datetime"])]                                # Checks for duplicated in datetime and removed them; @Krishna: How can such a duplicate occur?
-    diff = (df["datetime"][1]-df["datetime"][0]).seconds                            # integer diff in s; Calculates the length of the time interval between two timestamps 
-    df = df.set_index("datetime")                                                   # Resets the index of the dataframe df from the standard integer {0, 1, 2, ...} to be exchanged by the datetime column containing the timestamps.
-
-    while not(t0 in df.index.to_list()):                                            # The t0 from the excel sheet may not be precice that the sensor starts 
-        t0 = t0 + dt.timedelta(seconds=1)                                           # - starts at the same time so i used this while loop to calculate the 
-        print(t0)                                                                   # - the closest t0 after the original t0
-
-    df["roll"] = df["CO2_ppm"].rolling(int(T/diff)).mean()                          # moving average for 2 minutes, used to calculate Cend; T = 120s is the period time of the push-pull ventilation devices which compose the ventilation system. 
-
-
-
-    c0 = df["CO2_ppm"].loc[t0]                                                      # C0; @DRK: Check if c0 = df["roll"].loc[t0] is better here.
-    Cend37 = round((c0)*0.37, 2)                                                    # @DRK: From this line 101 schould be changed.   
-
-    cend = df.loc[df["roll"].le(Cend37)]                                            # Cend: Sliced df of the part of the decay curve below the 37 percent limit
-
-    if len(cend) == 0:                                                              # Syntax to find the tn of the experiment
-        tn = str(df.index[-1])
-        print("The device has not reached 37% of its initial concentration")
-    else:
-        tn = str(cend.index[0])
-
-    #%%% Plot Original
-    fig,ax = plt.subplots()
-    df.plot(title = "original " + time["short_name"][t], color = [ 'silver', 'green', 'orange'], ax = ax)
-
-    pdf = df.copy().reset_index()
-
-    #%%% Find max min points
-    from scipy.signal import argrelextrema                                          # Calculates the relative extrema of data.
-    n = round(T / (2*diff))                                                         # How many points on each side to use for the comparison to consider comparator(n, n+x) to be True.; @DRK: This value should depend on diff and T (period time of the push-pull devices). n = T / (2*diff)
-
-    df['max'] = df.iloc[argrelextrema(df['CO2_ppm'].values, np.greater_equal,\
-                                      order=n)[0]]['CO2_ppm']                       # Gives all the peaks; "np.greater_equal" is a callable function which argrelextrema shall use to compare to arrays before and after the point currently evaluated by argrelextrema.
-    df['min'] = df.iloc[argrelextrema(df['CO2_ppm'].values, np.less_equal,\
-                                      order=n)[0]]['CO2_ppm']                       # Gives all the valleys; "np.less_equal" is a callable function which argrelextrema shall use to compare to arrays before and after the point currently evaluated by argrelextrema.
-
-    df['max'].plot(marker='o', ax = ax)                                             # This needs to be verified with the graph if python recognizes all peaks
-    df['min'].plot(marker="v", ax = ax)                                             # - and valleys. If not adjust the n value.
-
-    #%%% Filter supply and exhaust phases 
-    df.loc[df['min'] > -400, 'mask'] = False                                        # Marks all min as False; @DRK: Why is this "-400" necessary?                         
-    df.loc[df['max'] > 0, 'mask'] = True                                            # Marks all max as True; @DRK: This is just a back-up right? For the case I use for debugging there is no change happening for df.
-    df["mask"] = df["mask"].fillna(method='ffill').astype("bool")                   # Use forward to fill True and False 
-    df = df.dropna(subset= ["mask"])                                                # In case there are NaNs left (at the beginning of the array) it drops/removes the whole time stamps/rows.
-    df["sup"] = df["mask"]                                                          # Create seperate columns for sup and exhaust; @DRK: Why is this necessary? At the end of these six lines of code df has 3 column {mask, sup, exh} containing all there the same data.
-    df["exh"] = df["mask"]
-
-
-    df.loc[df['min'] > 0, 'sup'] = True                                             # The valleys have to be belong to supply as well 
-    df.loc[df['max'] > 0, 'exh'] = False                                            # The peaks have to belong to max, before it was all filled be backfill
-
-
-    df_sup = df.loc[df["sup"].to_list()]                                            # Extract all the supply phases form df. Meaning only the timestamps maeked with "True" in df["sup"] are selected. 
-
-    a = df_sup.resample("5S").mean()                                                # Resampled beacuase, the time stamps are missing after slicing out the supply phases form df. The option "5S" adds the now missing time stamps again but without data. This is only necessary to plot the arrays flawlessly later in the same graphs again. 
-
-
-    #%%% Plot supply  
-    plt.figure()                                                                    # This can be verified from this graph        
-    a["CO2_ppm"].plot(title = "supply " + time["short_name"][t]) 
-    a["CO2_ppm"].plot(title = "supply") 
-    df_sup2 = a.loc[:,["CO2_ppm"]]
-
-    df_exh = df.loc[~df["exh"].values]
-    b = df_exh.resample("5S").mean()
-
-
-    #%%% Plot exhaust
-    b["CO2_ppm"].plot(title = "exhaust " + time["short_name"][t])                   # Similar procedure is repeated from exhaust
-    plt.figure()
-    b["CO2_ppm"].plot(title = "exhaust")                                            # Similar procedure is repeated from exhaust
-    df_exh2 = b.loc[:,["CO2_ppm"]]
-
-
-    #%%% Plot for extra prespective
-    fig,ax1 = plt.subplots()
-
-    df_sup.plot(y="CO2_ppm", style="yv-", ax = ax1, label = "supply")
-    df_exh.plot(y="CO2_ppm", style="r^-", ax = ax1, label = "exhaust")
-
-    #%%% Plotly 
-    pd.options.plotting.backend = "plotly" 
-
-    sup_exh_df = pd.concat([df_sup2, df_exh2], axis = 1).reset_index()
-    sup_exh_df.columns = ["datetime","supply", "exhaust"]
-
-    import plotly.express as px
-    fig = px.line(sup_exh_df, x="datetime", y = sup_exh_df.columns, title = time["short_name"][t])
-    fig.show()
-
-    import plotly.io as pio
-
-    pio.renderers.default='browser'
-
-    #%% Marking dataframes supply
-    """Marks every supply dataframe with a number for later anaysis """
-    n = 1
-    df_sup3 = df_sup2.copy().reset_index()                                          
-
-    start_date = str(t0); end_date = tn # CHANGE HERE 
-
-    mask = (df_sup3['datetime'] > start_date) & (df_sup3['datetime'] <= end_date)
-
-    df_sup3 = df_sup3.loc[mask]
-
-
-    for i,j in df_sup3.iterrows():                                                  # *.interrows() will always return a tuple encapsulating an int for the index of the dataframe where it is applied to and a series containing the data of row selected. Therefore it is good to seperate both before in e.g. i,j .
-        try:
-            # print(not pd.isnull(j["CO2_ppm"]), (np.isnan(df_sup3["CO2_ppm"][i+1])))
-            if (not pd.isnull(j["CO2_ppm"])) and (np.isnan(df_sup3["CO2_ppm"][i+1])):
-                df_sup3.loc[i,"num"] = n
-                n = n+1
-            elif (not pd.isnull(j["CO2_ppm"])):
-                df_sup3.loc[i,"num"] = n
-        except KeyError:
-            print("ignore the key error")
     
     #%% Load relevant data
     t = experimentno # to select the experiment (see Timeframes.xlsx)
@@ -494,10 +374,3 @@ def residence_time_sup_exh(experimentno=16, deviceno=1, periodtime=120, plot=Fal
             interesting.
 
 """
-
-    
-
-
-
-
-
