@@ -35,7 +35,7 @@ def residence_time_sup_exh(experimentno=16, deviceno=1, periodtime=120, plot=Fal
     # import sys  
     # sys.path.append("C:/Users/Devineni/OneDrive - bwedu/4_Recirculation/python_files/")  
     from Outdoor_CO2 import outdoor # This function calculates the outdoor CO2 data
-    
+    global a, b, df_tau_sup, df_tau_exh
     #%% Control plot properties"
     """This syntax controls the plot properties(default plot font, shape, etc), 
         more attributes can be added and removed depending on the requirement """
@@ -225,14 +225,53 @@ def residence_time_sup_exh(experimentno=16, deviceno=1, periodtime=120, plot=Fal
     #%%% Supply tau 
     # This method can be replicated in excel for crossreference
     """Calculates tau based in ISO 16000-8"""
+    
+    
+    if (database == "cbo_summer") or (database == "cbo_winter") or (database == "eshl_winter"):
+        engine1 = create_engine("mysql+pymysql://root:Password123@localhost/{}".format("cbo_calibration"),pool_pre_ping=True)
+#        engine = create_engine("mysql+pymysql://root:@34.107.104.23/{}".format("cbo_calibration"),pool_pre_ping=True)
+
+    elif database == "eshl_summer":
+        engine1 = create_engine("mysql+pymysql://root:Password123@localhost/{}".format("eshl_calibration"),pool_pre_ping=True)
+#        engine = create_engine("mysql+pymysql://root:@34.107.104.23/{}".format("eshl_calibration"),pool_pre_ping=True)
+
+    else:
+        print("Please select a correct database")
+    
+    
+    reg_result = pd.read_sql_table("reg_result", con = engine1).drop("index", axis = 1)
+    '''Calibration data for the particular sensor alone is filtered '''
+    global res
+
+    res = reg_result[reg_result['sensor'].str.lower() == table].reset_index(drop = True)
+    accuracy1 = 50 # it comes from the equation of uncertainity for testo 450 XL
+    accuracy2 = 0.02 # ±(50 ppm CO2 ±2% of mv)(0 to 5000 ppm CO2 )
+            
+    accuracy3 = 50 # the same equation for second testo 450 XL
+    accuracy4 = 0.02
+            
+    accuracy5 = 75 # # the same equation for second tes
+    accuracy6 = 0.03 # Citavi Title: Testo AG
+    
     df_tau_sup = []
     for idf in df_sup_list:
         if len(idf) > 3:
             a = idf.reset_index(drop = True)
+            a['CO2_ppm_reg'] = a.eval(res.loc[0, "equation"])    
+            a = a.rename(columns = {'CO2_ppm':'CO2_ppm_original', 'CO2_ppm_reg': 'CO2_ppm'})
+            a = a.drop_duplicates(subset=['datetime'])
+            a = a.loc[:, ["datetime", "CO2_ppm_original", "CO2_ppm"]]
+            a = a.dropna()
             a["log"] = np.log(a["CO2_ppm"])
             
             diff = (a["datetime"][1] - a["datetime"][0]).seconds
-            
+            a["s_meas"] =  np.sqrt(np.square((a["CO2_ppm"] * accuracy2)) 
+                                   + np.square(accuracy1) + np.square((a["CO2_ppm"] * accuracy4)) 
+                                   + np.square(accuracy3) + np.square((a["CO2_ppm"] * accuracy6)) 
+                                   + np.square(accuracy5)+ np.square(res.loc[0, "rse"]))
+            ns_meas = a['s_meas'].mean()
+            n = len(a['s_meas'])
+            global sa_num, s_lambda, s_phi_e
             
             ### ISO 16000-8 option to calculate slope (defined to be calculated by Spread-Sheat/Excel)
             a["runtime"] = np.arange(0,len(a) * diff, diff)
@@ -258,11 +297,27 @@ def residence_time_sup_exh(experimentno=16, deviceno=1, periodtime=120, plot=Fal
             tail = a["CO2_ppm"][len(a)-1]/abs(slope_sup)
             area_sup_1= (diff * (a["CO2_ppm"][0]/2 + sumconz +a["CO2_ppm"][len(a)-1]/2))
             from numpy import trapz
+            global area_sup_2, s_rest, s_total, a_rest, a_tot,sa_num,s_lambda, s_phi_e,s_rest, sa_rest, s_area
+            
             area_sup_2 = trapz(a["CO2_ppm"].values, dx=diff) # proof that both methods have same answer
             
+            a_rest = a["CO2_ppm"].iloc[-1]/abs(slope)
+            a_tot = area_sup_2 + a_rest
+            
+            sa_num = ns_meas * (diff) * ((n - 1)/np.sqrt(n)) # Taken from DIN ISO 16000-8:2008-12, Equation D2 units are cm3.m-3.sec
+            s_lambda = a["slope"][:-1].std()/abs(a["slope"][:-1].mean())
+            s_phi_e = a["slope"][:-1].std()/abs(a["slope"].iloc[-1])
+    
+            s_rest = np.sqrt(pow(s_lambda,2) + pow(s_phi_e,2))
+            sa_rest = s_rest * a_rest
+            s_area = np.sqrt(pow(sa_num,2) + pow(sa_rest,2))/a_tot
+            s_total = np.sqrt(pow(s_area,2) + pow(0.05,2))
+    
     
             tau = (area_sup_2 + tail)/a["CO2_ppm"][0]
             a["tau_sec"] = tau
+            a.loc[:, "s_total"] = s_total
+
             df_tau_sup.append(a)
         else:
             pass
@@ -309,9 +364,25 @@ def residence_time_sup_exh(experimentno=16, deviceno=1, periodtime=120, plot=Fal
     for e in df_exh_list:
         if len(e) > 3:
             b = e.reset_index(drop = True)
+            
+            
+            b['CO2_ppm_reg'] = b.eval(res.loc[0, "equation"])    
+            b = b.rename(columns = {'CO2_ppm':'CO2_ppm_original', 'CO2_ppm_reg': 'CO2_ppm'})
+            b = b.drop_duplicates(subset=['datetime'])
+            b = b.loc[:, ["datetime", "CO2_ppm_original", "CO2_ppm"]]
+            b = b.dropna()
+            
+            
+            
             b["log"] = np.log(b["CO2_ppm"])
             
             diff = (b["datetime"][1] - b["datetime"][0]).seconds
+            b["s_meas"] =  np.sqrt(np.square((b["CO2_ppm"] * accuracy2)) 
+                                   + np.square(accuracy1) + np.square((b["CO2_ppm"] * accuracy4)) 
+                                   + np.square(accuracy3) + np.square((b["CO2_ppm"] * accuracy6)) 
+                                   + np.square(accuracy5)+ np.square(res.loc[0, "rse"]))
+            ns_meas = b['s_meas'].mean()
+            n = len(b['s_meas'])
             
             
             b["runtime"] = np.arange(0,len(b) * diff, diff)
@@ -333,12 +404,29 @@ def residence_time_sup_exh(experimentno=16, deviceno=1, periodtime=120, plot=Fal
             sumconz = b["CO2_ppm"].iloc[1:-1].sum()
             
             tail = b["CO2_ppm"][len(b)-1]/abs(slope)
-            area1= (diff * (b["CO2_ppm"][0]/2 + sumconz +b["CO2_ppm"][len(b)-1]/2))
+            area1 = (diff * (b["CO2_ppm"][0]/2 + sumconz +b["CO2_ppm"][len(b)-1]/2))
             from numpy import trapz
+            global area2
             area2 = trapz(b["CO2_ppm"].values, dx=diff)                             # proof that both methods have same answer
+            
+           
+            
+            a_rest = b["CO2_ppm"].iloc[-1]/abs(slope)
+            a_tot = area2 + a_rest
+            
+            sa_num = ns_meas * (diff) * ((n - 1)/np.sqrt(n)) # Taken from DIN ISO 16000-8:2008-12, Equation D2 units are cm3.m-3.sec
+            s_lambda = b["slope"][:-1].std()/abs(b["slope"][:-1].mean())
+            s_phi_e = b["slope"][:-1].std()/abs(b["slope"].iloc[-1])
+    
+            s_rest = np.sqrt(pow(s_lambda,2) + pow(s_phi_e,2))
+            sa_rest = s_rest * a_rest
+            s_area = np.sqrt(pow(sa_num,2) + pow(sa_rest,2))/a_tot
+            s_total = np.sqrt(pow(s_area,2) + pow(0.05,2))
+            
             
             tau2 = (area2 + tail)/b["CO2_ppm"][len(b)-1]
             b["tau_sec"] = tau2
+            b.loc[:, "s_total"] = s_total
             df_tau_exh.append(b)
         else:
             pass
@@ -374,3 +462,5 @@ def residence_time_sup_exh(experimentno=16, deviceno=1, periodtime=120, plot=Fal
             interesting.
 
 """
+
+residence_time_sup_exh()
