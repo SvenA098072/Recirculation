@@ -177,7 +177,7 @@ def residence_time_sup_exh(experimentno=16, deviceno=1, periodtime=120, plot=Fal
     
     #%%% Plot Plotly
     if plot:
-        pd.options.plotting.backend = "plotly" # NOTE: This changes the plot backend which should be resetted after it is not needed anymore. Otherwise it will permanently cause problems in future, since it is a permanent change.
+        #pd.options.plotting.backend = "plotly" # NOTE: This changes the plot backend which should be resetted after it is not needed anymore. Otherwise it will permanently cause problems in future, since it is a permanent change.
     
         sup_exh_df = pd.concat([df_sup2, df_exh2], axis = 1).reset_index()
         sup_exh_df.columns = ["datetime","supply", "exhaust"]
@@ -189,7 +189,7 @@ def residence_time_sup_exh(experimentno=16, deviceno=1, periodtime=120, plot=Fal
         import plotly.io as pio
         
         pio.renderers.default='browser'
-        pd.options.plotting.backend = "matplotlib" # NOTE: This is a reset and useful in case the plotbackend has been changed by any previously (even befor machine shut-downs).
+        #pd.options.plotting.backend = "matplotlib" # NOTE: This is a reset and useful in case the plotbackend has been changed by any previously (even befor machine shut-downs).
     else:
         pass
     
