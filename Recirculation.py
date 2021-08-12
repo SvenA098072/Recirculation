@@ -1268,7 +1268,7 @@ def residence_time_sup_exh(experimentno=3, deviceno=0, periodtime=120,
     # df_indexm_exh = []
 
     
-    # #%%%%% Calculate Delta tau between exhaust of tau_3 and and exhaust of tau_2
+     #%%%%% Calculate Delta tau between exhaust of tau_3 and and exhaust of tau_2
     # '''       
     # '''
     
@@ -1374,5 +1374,3 @@ def residence_time_sup_exh(experimentno=3, deviceno=0, periodtime=120,
             interesting.
 
 """
-
-residence_time_sup_exh()
