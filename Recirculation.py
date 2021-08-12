@@ -6,6 +6,7 @@ Created on Thu Apr  8 14:26:27 2021
 """
 # Necessary modules
 import pandas as pd
+pd.set_option('mode.chained_assignment',None)
 import numpy as np
 import datetime as dt
 import matplotlib.pyplot as plt
@@ -14,21 +15,63 @@ pd.options.plotting.backend = "matplotlib" # NOTE: This is useful in case the pl
 # from statistics import mean
 from tabulate import tabulate
 from sqlalchemy import create_engine
+from uncertainties import ufloat
+from uncertainties import unumpy
+from uncertainties import umath
+
+from post_processing import CBO_ESHL
 
 
 # functions to print in colour
 def prRed(skk): print("\033[31;1;m {}\033[00m" .format(skk)) 
 def prYellow(skk): print("\033[33;1;m {}\033[00m" .format(skk)) 
 # The following is a general syntax to dedine a MySQL connection
-# =============================================================================
-# engine = create_engine("mysql+pymysql://admin:the_secure_password_4_ever@localhost/",\
-#                          pool_pre_ping=True) # Krishna's local address
-# =============================================================================
-engine = create_engine("mysql+pymysql://wojtek:Password#102@wojtek.mysql.database.azure.com/",\
-                      pool_pre_ping=True) # Cloud server address
+engine = create_engine("mysql+pymysql://root:Password123@localhost/",pool_pre_ping=True)
+### =============================================================================
+### engine = create_engine("mysql+pymysql://admin:the_secure_password_4_ever@localhost/",\
+###                           pool_pre_ping=True) # Krishna's local address
+###=============================================================================
+### engine = create_engine("mysql+pymysql://wojtek:Password#102@wojtek.mysql.database.azure.com/",\
+###                       pool_pre_ping=True) # Cloud server address
 
-def residence_time_sup_exh(experimentno=16, deviceno=1, periodtime=120, plot=False):
-    #%% Function import
+class ResidenceTimeMethodError(ValueError):
+    def __str__(self):
+        return 'You need to select a valid method: iso, trapez or simpson (default)'
+    
+#%% Function shape to be fitted for infinity concentration of tau_exh
+def expfitshape(x, a, b):
+    return a*b/x*np.exp(-a/x)
+
+#%% Function to find outliers
+def find_outliers(col):
+    from scipy import stats
+    z = np.abs(stats.zscore(col))
+    idx_outliers = np.where(z>3,True,False)
+    return pd.Series(idx_outliers,index=col.index)
+
+
+def residence_time_sup_exh(experimentno=3, deviceno=0, periodtime=120, 
+                           experimentname=False, plot=False, 
+                           export_sublist=False, method='simpson',
+                           filter_maxTrel=0.25, logging=False):
+    """
+        method:
+            'iso'       (Default) The method described in ISO 16000-8 will be applied
+                        however this method has a weak uncertainty analysis.
+            'trapez'    corrected ISO 16000-8 method applying the trapezoidal method
+                        for the interval integration and considers this in the 
+                        uncertainty evaluation.
+            'simpson'   Applies the Simpson-Rule for the integration and consequently 
+                        considers this in the uncertainty evaluation.
+        
+        filter_maxTrel:
+            Percentage value for the allowed deviation of the predefined 
+            periodtime T of the devices. Only half-cycles which meet the 
+            criterion ]T/2*(1-filter_maxTrel),T/2*(1+filter_maxTrel)[
+            are going to be evaluated.
+    """    
+    
+    #%% Function import  
     """Syntax to import a function from any folder. Useful if the function.py file 
        is in another folder other than the working folder"""
     # import sys  
@@ -52,34 +95,120 @@ def residence_time_sup_exh(experimentno=16, deviceno=1, periodtime=120, plot=Fal
     t = experimentno # to select the experiment (see Timeframes.xlsx)
     l = deviceno # to select the sensor in the ventilation device
     
-    T = periodtime                                                              # T in s; period time of the ventilation systems push-pull devices.
+    if periodtime is None:
+        T = 120
+        prYellow('ATTENTION: periodtime has not been defined. I setted T=120s instead')
+    else:
+        T = periodtime
+    
+    # T in s; period time of the ventilation systems push-pull devices.
     # time = pd.read_excel("C:/Users/Devineni/OneDrive - bwedu/4_Recirculation/Times_thesis.xlsx", sheet_name="Timeframes")
     # The dataframe time comes from the excel sheet in the path above, to make -
     # - changes go to this excel sheet, edit and upload it to mysql.
     
-    time = pd.read_sql_query("SELECT * FROM testdb.timeframes;", con = engine)      #standard syntax to fetch a table from Mysql
+    lb = T/2*(1-filter_maxTrel) # lower bound of considered cycles
+    ub = T/2*(1+filter_maxTrel) # upper bound of considered cycles
+    
+    time = pd.read_sql_query("SELECT * FROM testdb.timeframes;", con = engine)      
+    #standard syntax to fetch a table from Mysql; In this case a table with the 
+    # short-names of the measurements, all the start and end times, the DB-name 
+    # of the measurement and the required table-names of the DB/schema is loaded into a dataframe. 
     
     start, end = str(time["Start"][t] - dt.timedelta(minutes=20)), str(time["End"][t]) # selects start and end times to slice dataframe
-    t0 = time["Start"][t]                                                           #actual start of the experiment
+    
+    t0glob = time["Start"][t]
+    # actual start of the experiment, out of the dataframe "time"
+    
+    fdelay = 2
+    
+    t0 = time["Start"][t] + dt.timedelta(seconds=fdelay*T)                                 
+    # actual start of the experiment, out of the dataframe "time" + device periods,
+    # since the decay of the moving average curve of the subsystem 23 is at the 
+    # beginning falsified by the drop from the accumulation level in subsystem 3.
+    # The drop is the response signal of the entire system 123. After this
+    # about 2*T the falisification due to the respones of the entire system is
+    # negligable.
     
     table = time["tables"][t].split(",")[l]                                         #Name of the ventilation device
     
+    
     dum = [["Experiment",time["short_name"][t] ], ["Sensor", table]]                # Creates a list of 2 rows filled with string tuples specifying the experiment and the sensor.
-    print(tabulate(dum))                                                            # Prints the inut details in a table
+    if experimentname:
+        print(tabulate(dum))                                                            # Prints the inut details in a table
+    else:
+        pass
     
     database = time["database"][t]                                                  # Selects the name of the database as a string 
     
+    #%%% Load data for the occupied space V3
     
+    experimentglo = CBO_ESHL(experiment = dum[0][1], sensor_name = dum[1][1])
+    
+    alpha_mean, df_alpha, df_indoor = experimentglo.mean_curve()
+    alpha_mean_u = ufloat(alpha_mean[0], alpha_mean[1])
+    
+    dfin_dCmean = df_indoor.loc[:,['mean_delta', 'std mean_delta']]
+    
+    mean_delta_0_room = dfin_dCmean.loc[t0glob]
+    mean_delta_0_room_u = ufloat(mean_delta_0_room[0],mean_delta_0_room[1])
+   
+    #%%%%% Add mean and exhaust concentrations indoor (V3) to the dfin_dCmean
+    '''
+        mean concentrations: 
+            Based on the calculated spatial and statistical mean air
+            age in the occupied space and the spacial average initial 
+            concentration in the occupied space at t0glob.
+    '''
+    
+    count = 0
+    dfin_dCmean['room_av'] = pd.Series(dtype='float64')
+    dfin_dCmean['std room_av'] = pd.Series(dtype='float64')
+    dfin_dCmean['room_exh'] = pd.Series(dtype='float64')
+    dfin_dCmean['std room_exh'] = pd.Series(dtype='float64')
+    dfin_dCmean.reset_index(inplace=True)
+    
+    while (count < len(dfin_dCmean)):     
+        
+        '''
+        mean concentrations: 
+            Based on the calculated spatial and statistical mean air
+            age in the occupied space and the spacial average initial 
+            concentration in the occupied space at t0glob.
+        '''    
+        value = mean_delta_0_room_u*unumpy.exp(-1/(alpha_mean_u)*\
+                    ((dfin_dCmean['datetime'][count]-t0glob).total_seconds()/3600))
+        dfin_dCmean['room_av'][count] = value.n
+        dfin_dCmean['std room_av'][count] = value.s
+        
+        '''
+        exhaust concentrations: 
+            Based on the calculated spatial and statistical mean air
+            age in the occupied space and the spacial average initial 
+            concentration in the occupied space at t0glob.
+        '''
+        value = mean_delta_0_room_u*unumpy.exp(-1/(2*alpha_mean_u)*\
+                    ((dfin_dCmean['datetime'][count]-t0glob).total_seconds()/3600))
+        dfin_dCmean['room_exh'][count] = value.n
+        dfin_dCmean['std room_exh'][count] = value.s
+        
+        count = count + 1
+    
+    dfin_dCmean = dfin_dCmean.set_index('datetime')           
+        
+    #%%% Load background data
+       
     background, dummy = outdoor(str(t0), str(end), plot = False)                    # Syntax to call the background concentration function, "dummy" is only necessary since the function "outdoor" returns a tuple of a dataframe and a string.
     background = background["CO2_ppm"].mean()                                       # Future: implement cyclewise background concentration; Till now it takes the mean outdoor concentration of the whole experiment.
+
+    #%%% Load data of the experiment and the selected sensor
     
     df = pd.read_sql_query("SELECT * FROM {}.{} WHERE datetime BETWEEN '{}' AND\
                            '{}'".format(database, table, start, end), con = engine)
     df = df.loc[:,["datetime", "CO2_ppm"]]
-    df["original"] = df["CO2_ppm"]                                                  # filters only the CO2 data till this line
-    df.columns = ["datetime", "original", "CO2_ppm"]
-    
     df["original"] = df["CO2_ppm"]                                                  # Copies the original absolute CO2-concentrations data form CO2_ppm in a "backup"-column originals 
+    df.columns = ["datetime", "original", "CO2_ppm"]                                # changes the order of the columns to the defined one
+    
+    # df["original"] = df["CO2_ppm"]                                                  # Copies the original absolute CO2-concentrations data form CO2_ppm in a "backup"-column originals; this one can be deleted 
     
     df["CO2_ppm"] = df["CO2_ppm"] - background                                      # substracts the background concentrations -> CO2_ppm contains CO2-concentration of some instance of time above background concentration.
     
@@ -99,7 +228,7 @@ def residence_time_sup_exh(experimentno=16, deviceno=1, periodtime=120, plot=Fal
     
     
     
-    c0 = df["CO2_ppm"].loc[t0]                                                      # C0; @DRK: Check if c0 = df["roll"].loc[t0] is better here.
+    c0 = df["roll"].loc[t0]                                                      # C0; @DRK: Check if c0 = df["roll"].loc[t0] is better here. ## ORIGINAL: c0 = df["CO2_ppm"].loc[t0] 
     Cend37 = round((c0)*0.37, 2)                                                    # @DRK: From this line 101 schould be changed.   
     
     cend = df.loc[df["roll"].le(Cend37)]                                            # Cend: Sliced df of the part of the decay curve below the 37 percent limit
@@ -153,6 +282,22 @@ def residence_time_sup_exh(experimentno=16, deviceno=1, periodtime=120, plot=Fal
     b = df_exh.resample("5S").mean()
     df_exh2 = b.loc[:,["CO2_ppm"]]
     
+    sup_exh_df = pd.concat([dfin_dCmean, df_sup2, df_exh2], axis = 1).reset_index()
+    sup_exh_df.columns = ["datetime", 
+                              "meas room_av", "std meas room_av", 
+                              "calc room_av", "std calc room_av",  
+                              "calc room_exh", "std calc room_exh", 
+                              "supply", "exhaust"]
+    sup_exh_df['d calc exh-av'] = np.sqrt(np.power(sup_exh_df["calc room_exh"],2)\
+                                          - np.power(sup_exh_df["calc room_av"],2))
+    sup_exh_df['std d calc exh-av'] = np.sqrt(np.power(sup_exh_df["std calc room_exh"],2)\
+                                              - np.power(sup_exh_df["std calc room_av"],2))
+    
+    #%%%%%% Calculation of the weight factor of the current device period
+            
+    ddCmax_exhav = sup_exh_df.loc[sup_exh_df['d calc exh-av'].idxmax()]
+    ddCmax_exhav = ddCmax_exhav.filter(['datetime','d calc exh-av','std d calc exh-av'])
+    
     #%%% Plot Matplotlib                                                            # This can be verified from this graph        
 # =============================================================================
 #     if plot:
@@ -177,19 +322,44 @@ def residence_time_sup_exh(experimentno=16, deviceno=1, periodtime=120, plot=Fal
     
     #%%% Plot Plotly
     if plot:
-        #pd.options.plotting.backend = "plotly" # NOTE: This changes the plot backend which should be resetted after it is not needed anymore. Otherwise it will permanently cause problems in future, since it is a permanent change.
+        pd.options.plotting.backend = "plotly" # NOTE: This changes the plot backend which should be resetted after it is not needed anymore. Otherwise it will permanently cause problems in future, since it is a permanent change.
     
-        sup_exh_df = pd.concat([df_sup2, df_exh2], axis = 1).reset_index()
-        sup_exh_df.columns = ["datetime","supply", "exhaust"]
-        
         import plotly.express as px
-        fig = px.line(sup_exh_df, x="datetime", y = sup_exh_df.columns, title = time["short_name"][t])
+        import plotly.graph_objects as go
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(#title = time["short_name"][t],
+                                 name='meas room_av',
+                                 x = sup_exh_df["datetime"], 
+                                 y = sup_exh_df["meas room_av"],
+                                 #error_y=dict(value=sup_exh_df["std meas room_av"].max())
+                                 )
+                      )
+        fig.add_trace(go.Scatter(name='calc room_av',
+                                 x = sup_exh_df["datetime"], 
+                                 y = sup_exh_df["calc room_av"],
+                                 #error_y = dict(value=sup_exh_df["std calc room_av"].max())
+                                 )
+                      )
+        fig.add_trace(go.Scatter(name='calc room_exh',
+                                 x = sup_exh_df["datetime"], 
+                                 y = sup_exh_df["calc room_exh"],
+                                 #error_y=dict(value=sup_exh_df["std calc room_exh"].max())
+                                 )
+                      )
+        fig.add_trace(go.Scatter(name='d calc exh-av',
+                                 x = sup_exh_df["datetime"], 
+                                 y = sup_exh_df["d calc exh-av"],
+                                 #error_y=dict(value=sup_exh_df["std d calc exh-av"].max())
+                                 )
+                      )
+        fig.add_trace(go.Scatter(name='supply',x=sup_exh_df["datetime"], y = sup_exh_df["supply"]))
+        fig.add_trace(go.Scatter(name='exhaust',x=sup_exh_df["datetime"], y = sup_exh_df["exhaust"]))
         fig.show()
         
         import plotly.io as pio
         
         pio.renderers.default='browser'
-        #pd.options.plotting.backend = "matplotlib" # NOTE: This is a reset and useful in case the plotbackend has been changed by any previously (even befor machine shut-downs).
+        pd.options.plotting.backend = "matplotlib" # NOTE: This is a reset and useful in case the plotbackend has been changed by any previously (even befor machine shut-downs).
     else:
         pass
     
@@ -205,7 +375,10 @@ def residence_time_sup_exh(experimentno=16, deviceno=1, periodtime=120, plot=Fal
     df_sup3 = df_sup3.loc[mask]
     
     
-    for i,j in df_sup3.iterrows():                                                  # *.interrows() will always return a tuple encapsulating an int for the index of the dataframe where it is applied to and a series containing the data of row selected. Therefore it is good to seperate both before in e.g. i,j .
+    for i,j in df_sup3.iterrows():                                                  
+        # *.interrows() will always return a tuple encapsulating an int for the 
+        # index of the dataframe where it is applied to and a series containing 
+        # the data of row selected. Therefore it is good to seperate both before in e.g. i,j .
         try:
             # print(not pd.isnull(j["CO2_ppm"]), (np.isnan(df_sup3["CO2_ppm"][i+1])))
             if (not pd.isnull(j["CO2_ppm"])) and (np.isnan(df_sup3["CO2_ppm"][i+1])):
@@ -217,10 +390,25 @@ def residence_time_sup_exh(experimentno=16, deviceno=1, periodtime=120, plot=Fal
             pass
             # print("ignore the key error")
         
-    
+    #%%%% Exporrt a file with all the supply curves sorted in a matrix for an excel diagram    
     df_sup_list = []
+    dummy_df = pd.DataFrame(columns=['datetime', 'CO2_ppm', 'num'])
     for i in range(1, int(df_sup3.num.max()+1)):
+
+        try:
+            if export_sublist and len(df_sup3.loc[df_sup3["num"]==i]) > 3:
+                dummy_df = dummy_df.append(df_sup3.loc[df_sup3["num"]==(i)])
+                dummy_df = dummy_df.rename(columns = {'CO2_ppm':'CO2_ppm_{}'.format(i)})
+            
+            
+        except KeyError:
+            pass
+            # print("ignore the key error")
+
         df_sup_list.append(df_sup3.loc[df_sup3["num"]==i])
+    
+    del dummy_df["num"]
+    dummy_df.to_csv(r'D:\Users\sauerswa\wichtige Ordner\sauerswa\Codes\Python\Recirculation\export\df_sup_{}_{}.csv'.format(database, table), index=True) 
     
     #%%% Supply tau 
     # This method can be replicated in excel for crossreference
@@ -243,7 +431,7 @@ def residence_time_sup_exh(experimentno=16, deviceno=1, periodtime=120, plot=Fal
     '''Calibration data for the particular sensor alone is filtered '''
     global res
 
-    res = reg_result[reg_result['sensor'].str.lower() == table].reset_index(drop = True)
+    res = reg_result[reg_result['sensor'].str.lower() == table].reset_index(drop = True) # Contains the sensor calibration data and especially the calibration curve.
     accuracy1 = 50 # it comes from the equation of uncertainity for testo 450 XL
     accuracy2 = 0.02 # ±(50 ppm CO2 ±2% of mv)(0 to 5000 ppm CO2 )
             
@@ -254,81 +442,281 @@ def residence_time_sup_exh(experimentno=16, deviceno=1, periodtime=120, plot=Fal
     accuracy6 = 0.03 # Citavi Title: Testo AG
     
     df_tau_sup = []
+    s_cyc = 0
     for idf in df_sup_list:
         if len(idf) > 3:
-            a = idf.reset_index(drop = True)
-            a['CO2_ppm_reg'] = a.eval(res.loc[0, "equation"])    
+            a = idf.reset_index(drop = True)                                    # Overwride the dummy dataframe "a" by the currently chosen supply decay curve.
+            a['CO2_ppm_reg'] = a.eval(res.loc[0, "equation"])                   # See: https://pandas.pydata.org/pandas-docs/stable/reference/api/pandas.DataFrame.eval.html?highlight=pandas%20dataframe%20eval#pandas.DataFrame.eval    
             a = a.rename(columns = {'CO2_ppm':'CO2_ppm_original', 'CO2_ppm_reg': 'CO2_ppm'})
             a = a.drop_duplicates(subset=['datetime'])
             a = a.loc[:, ["datetime", "CO2_ppm_original", "CO2_ppm"]]
-            a = a.dropna()
-            a["log"] = np.log(a["CO2_ppm"])
-            
+                        
             diff = (a["datetime"][1] - a["datetime"][0]).seconds
-            a["s_meas"] =  np.sqrt(np.square((a["CO2_ppm"] * accuracy2)) 
-                                   + np.square(accuracy1) + np.square((a["CO2_ppm"] * accuracy4)) 
-                                   + np.square(accuracy3) + np.square((a["CO2_ppm"] * accuracy6)) 
-                                   + np.square(accuracy5)+ np.square(res.loc[0, "rse"]))
-            ns_meas = a['s_meas'].mean()
-            n = len(a['s_meas'])
-            global sa_num, s_lambda, s_phi_e
             
-            ### ISO 16000-8 option to calculate slope (defined to be calculated by Spread-Sheat/Excel)
             a["runtime"] = np.arange(0,len(a) * diff, diff)
             
-            a["t-te"] = a["runtime"] - a["runtime"][len(a)-1]
+            lena = a["runtime"].iloc[-1]
             
-            a["lnte/t"] = a["log"] - a["log"][len(a)-1]
+            if a["runtime"].iloc[-1]>T/2*(1-filter_maxTrel) and \
+                a["runtime"].iloc[-1]<T/2*(1+filter_maxTrel):
+                    
+                if logging:
+                    prYellow("Since: {} < {} < {}, I consider the supply cycle {}".format(lb, lena, ub, s_cyc))
             
-            a["slope"] = a["lnte/t"] / a["t-te"]
-            slope_sup = a["slope"].mean()
-            
-            ### More acurate option to calculate the solpe of each (sub-)curve
-            x1 = a["runtime"].values
-            y1 = a["log"].values
-            from scipy.stats import linregress
-            slope = linregress(x1,y1)[0]
-            ###
-            
-            a.loc[[len(a)-1], "slope"] = abs(slope_sup)
-            
-            sumconz = a["CO2_ppm"].iloc[1:-1].sum()
-            
-            tail = a["CO2_ppm"][len(a)-1]/abs(slope_sup)
-            area_sup_1= (diff * (a["CO2_ppm"][0]/2 + sumconz +a["CO2_ppm"][len(a)-1]/2))
-            from numpy import trapz
-            global area_sup_2, s_rest, s_total, a_rest, a_tot,sa_num,s_lambda, s_phi_e,s_rest, sa_rest, s_area
-            
-            area_sup_2 = trapz(a["CO2_ppm"].values, dx=diff) # proof that both methods have same answer
-            
-            a_rest = a["CO2_ppm"].iloc[-1]/abs(slope)
-            a_tot = area_sup_2 + a_rest
-            
-            sa_num = ns_meas * (diff) * ((n - 1)/np.sqrt(n)) # Taken from DIN ISO 16000-8:2008-12, Equation D2 units are cm3.m-3.sec
-            s_lambda = a["slope"][:-1].std()/abs(a["slope"][:-1].mean())
-            s_phi_e = a["slope"][:-1].std()/abs(a["slope"].iloc[-1])
+                ### Calculating the measurement uncertainty based on the uncertainties of the reference sensors and the deviation of the sensor during its calibration
+                a["s_meas"] =  np.sqrt(np.square((a["CO2_ppm"] * accuracy2)) 
+                                       + np.square(accuracy1) + np.square((a["CO2_ppm"] * accuracy4)) 
+                                       + np.square(accuracy3) + np.square((a["CO2_ppm"] * accuracy6)) 
+                                       + np.square(accuracy5)+ np.square(res.loc[0, "rse"]))
+                ns_meas = a['s_meas'].mean()
+                n = len(a['s_meas'])
+                
+                global sa_num, s_lambda, s_phi_e
+                global area_sup, s_rest, s_total, a_rest, a_tot,sa_num,s_lambda, s_phi_e,s_rest, sa_rest, s_area
+                 
+                a = a.dropna()
+                a = a[a["CO2_ppm"] >= a["CO2_ppm"].iloc[0]*0.36]
+                a["log"] = np.log(a["CO2_ppm"])
+                a = a.dropna()
+                                        
+                ### ISO 16000-8 option to calculate slope (defined to be calculated by Spread-Sheat/Excel)
+                a["t-te"] = a["runtime"] - a["runtime"][len(a)-1]
+                
+                a["lnte/t"] = a["log"][len(a)-1] - a["log"]                         # @DRK: The slope (as defined in ISO 16000-8) was always negative since the two subtrahend where in the wrong order.
+                
+                a["slope"] = a["lnte/t"] / a["t-te"]
+                
+                try:
+                    if method=='iso':
+                        slope = a["slope"].mean()
+                        
+                        sumconz = a["CO2_ppm"].iloc[1:-1].sum()
+                        area_sup = (diff * (a["CO2_ppm"][0]/2 + sumconz +a["CO2_ppm"][len(a)-1]/2))
+                        print('ATTENTION: ISO 16000-8 method has a weak uncertainty evaluation consider using trapezoidal method is correcting this.')
+                        
+                    elif method=='trapez':
+                        ### More acurate option to calculate the solpe of each (sub-)curve
+                        x1 = a["runtime"].values
+                        y1 = a["log"].values
+                        
+                        from scipy.stats import linregress
+                        slope = -linregress(x1,y1)[0]
+                        
+                        from numpy import trapz
+                        area_sup = trapz(a["CO2_ppm"].values, dx=diff) # proof that both methods have same answer:  area_sup_2 = area_sup_1
+                        print('ATTENTION: Trapezoidal method is used in ISO 16000-8 and here also considered in the uncertainty evaluation. However, more precise results are given by applying the Simpson-Rule.')
+                    
+                    elif method=='simpson':
+                        ### More acurate option to calculate the solpe of each (sub-)curve
+                        x1 = a["runtime"].values
+                        y1 = a["log"].values
+                        
+                        from scipy.stats import linregress
+                        slope = -linregress(x1,y1)[0]
+                        
+                        from scipy.integrate import simpson
+                        area_sup = simpson(a["CO2_ppm"].values, dx=diff, even='first') # proof that both methods have same answer:  area_sup_2 = area_s
+                    
+                    else:
+                        raise ResidenceTimeMethodError
+                        
+                except ResidenceTimeMethodError as err:
+                    print(err)
+                    
+                a.loc[[len(a)-1], "slope"] = slope
     
-            s_rest = np.sqrt(pow(s_lambda,2) + pow(s_phi_e,2))
-            sa_rest = s_rest * a_rest
-            s_area = np.sqrt(pow(sa_num,2) + pow(sa_rest,2))/a_tot
-            s_total = np.sqrt(pow(s_area,2) + pow(0.05,2))
+                # tail = a["CO2_ppm"][len(a)-1]/slope
+                a_rest = a["CO2_ppm"].iloc[-1]/slope
+                a_tot = area_sup + a_rest
+                
+                tau = a_tot/a["CO2_ppm"][0]
+                a["tau_sec"] = tau
+                
+                try:     
+                    if method=='iso':
+                        # Taken from DIN ISO 16000-8:2008-12, Equation D2 units are cm3.m-3.sec
+                        sa_num = ns_meas * (diff) * ((n - 1)/np.sqrt(n))
+                        
+                        # The uncertainty of the summed trapezoidal method itself is not covered by ISO 16000-8.
+                        sa_tm = 0
+                        
+                    elif method=='trapez':
+                        # Actually sa_num (the propagated uncertainty of the measurement) should be calculated this way
+                        sa_num = (diff) * ns_meas * np.sqrt((2*n-1)/2*n) 
+                        
+                        # Aditionally the summed trapezoidal method itself has an uncertainty as well.
+                        sa_tm = diff**2/12*(a["runtime"].loc[len(a)-1]-a["runtime"][0])*a["CO2_ppm"][0]/tau**2
+                    
+                    elif method=='simpson':
+                        # Actually sa_num (the propagated uncertainty of the measurement) should be calculated this way
+                        sa_num = 1/3*diff*ns_meas*np.sqrt(2+20*round(n/2-0.5))
+                        
+                        # Aditionally the summed trapezoidal method itself has an uncertainty as well.
+                        sa_tm = diff**4/2880*(a["runtime"].loc[len(a)-1]-a["runtime"][0])*a["CO2_ppm"][0]/tau**4
+                    
+                    else:
+                        raise ResidenceTimeMethodError
+                        
+                except ResidenceTimeMethodError as err:
+                    print(err)
+                
+                s_lambda = a["slope"][:-1].std()/abs(a["slope"][:-1].mean())
+                s_phi_e = a["slope"][:-1].std()/slope
+        
+                s_rest = np.sqrt(pow(s_lambda,2) + pow(s_phi_e,2))
+                sa_rest = s_rest * a_rest
+                s_area = np.sqrt(pow(sa_num,2) + pow(sa_tm,2) + pow(sa_rest,2))/a_tot
+                s_total = np.sqrt(pow(s_area,2) + pow(0.05,2))
+                
+                a.loc[:, "s_total"] = s_total
+                
+                #%%%%% Calculate weighting factor 
+                sup_exh_df = sup_exh_df.set_index('datetime')
+                
+                dfslice = sup_exh_df[a["datetime"][0]:a["datetime"][len(a)-1]]
+                dfslice = dfslice.filter(['d calc exh-av', 'std d calc exh-av'])
+                a = a.set_index('datetime')
+                a = pd.concat([a, dfslice], axis = 1).reset_index()
+                del dfslice
+                
+                from scipy.integrate import simpson
+                area_weight = simpson(a["d calc exh-av"].values, dx=diff, even='first')
+                # Actually sa_num (the propagated uncertainty of the measurement) should be calculated this way
+                
+                saw_num = 1/3*diff*np.mean(a["std d calc exh-av"])*np.sqrt(2+20*round(n/2-0.5))
+                        
+                # Aditionally the summed trapezoidal method itself has an uncertainty as well.
+                saw_tm = diff**4/2880*(a["runtime"].loc[len(a)-1]-a["runtime"][0])*ddCmax_exhav["d calc exh-av"]
+                
+                saw = np.sqrt(pow(saw_num,2) + pow(saw_tm,2))
+                
+                area_weight = ufloat(area_weight, saw)
+                weight = area_weight/(ufloat(ddCmax_exhav["d calc exh-av"],ddCmax_exhav["std d calc exh-av"])*a['runtime'].iloc[-1])
+                
+                a.loc[:, "weight"] = weight.n
+                a.loc[:, "std weight"] = weight.s
+                
+                a.loc[:, "Cycle"] = s_cyc
     
-    
-            tau = (area_sup_2 + tail)/a["CO2_ppm"][0]
-            a["tau_sec"] = tau
-            a.loc[:, "s_total"] = s_total
-
-            df_tau_sup.append(a)
+                sup_exh_df.reset_index(inplace=True)
+                
+                #%%%%% Summarise
+                df_tau_sup.append(a)
+            
+            else:
+                if logging:
+                    prRed("Since the supply cycle {} has a runtime of {} s it is outside [{}, {}]".format(s_cyc, lena, lb,  ub))
+                pass
+            
+            s_cyc = s_cyc + 1
+            
         else:
             pass
-    #%%% Supply final tau
+    #%%%% Supply tau from step-down curves 
+    cyclnr_sup = []
     tau_list_sup = []
-    for h in df_tau_sup:
-        tau_list_sup.append(h["tau_sec"][0])
-    
-    tau_s = np.mean(tau_list_sup)
-    
+    stot_list_sup = []
+    weight_list_sup = []
+    saw_list_sup = []
+    for jdf in df_tau_sup:
+        cyclnr_sup.append(jdf["Cycle"][0])
+        tau_list_sup.append(jdf["tau_sec"][0])
+        stot_list_sup.append(jdf["s_total"][0])
+        weight_list_sup.append(jdf["weight"][0])
+        saw_list_sup.append(jdf["std weight"][0])
         
+    df_tau_s = pd.DataFrame({'Cycle':cyclnr_sup,
+                             'tau_sup':tau_list_sup, 
+                             'std tau_sup':stot_list_sup, 
+                             'weight':weight_list_sup, 
+                             'std weight':saw_list_sup})
+    
+    # Filter outliers (see https://medium.com/@stevenewmanphotography/eliminating-outliers-in-python-with-z-scores-dd72ca5d4ead)
+    df_tau_s['outliers'] = find_outliers(df_tau_s['tau_sup'])
+    df_tau_s = df_tau_s[df_tau_s['outliers']==False]
+    
+    
+    '''
+    Weighting factor for the supply phases is not as important since the 
+    residence times here are mostly normal distributed throughout the phases.
+    Therefore it can be set low which means that almost all calcuated 
+    residence times will be considered. The range for cfac_s is 0 to 1.
+    Values >= 1 will autmatically trigger that the residence times with the 
+    highest weighting factor will be chosen.
+    '''
+    cfac_s = 0.2
+    df_tau_s2 = df_tau_s[df_tau_s['weight']>cfac_s]
+    if len(df_tau_s2) == 0:
+        df_tau_s2 = df_tau_s.nlargest(10, 'weight')
+    
+    tau_list_sup_u = unumpy.uarray(df_tau_s2['tau_sup'],df_tau_s2['std tau_sup'])
+    weight_list_sup_u = unumpy.uarray(df_tau_s2['tau_sup'],df_tau_s2['std tau_sup']) 
+    
+    # Mean supply phase residence time
+    tau_s_u = sum(tau_list_sup_u*weight_list_sup_u)/sum(weight_list_sup_u)
+    
+    
+    # df_tau_s = pd.DataFrame({'nom' : [], 'std' : []})
+    # count = 0
+    # while (count < len(tau_list_sup_u)):
+    #     df_tau_s.loc[count,['nom']] = tau_list_sup_u[count].n
+    #     df_tau_s.loc[count,['std']] = tau_list_sup_u[count].s
+    #     count = count + 1
+        
+    #%%%%% Plot: residence times of the step-down curves during supply-phase 
+    if plot:
+        import plotly.io as pio
+    
+        pio.renderers.default='browser'
+        pd.options.plotting.backend = "matplotlib"
+        #######################################################################
+        pd.options.plotting.backend = "plotly"
+        
+        import plotly.io as pio
+        
+        pio.renderers.default='browser'
+        import plotly.express as px
+        import plotly.graph_objects as go
+        from plotly.subplots import make_subplots
+
+        # Create figure with secondary y-axis
+        fig2 = make_subplots(specs=[[{"secondary_y": True}]])
+                
+        fig2.add_trace(go.Scatter(name='Verweilzeit',
+                                 x = df_tau_s['Cycle'], 
+                                 y = df_tau_s['tau_sup'],
+                                 error_y=dict(value=df_tau_s['std tau_sup'].max())
+                                 ),
+                       secondary_y=False,
+                       )
+        
+        fig2.add_trace(go.Scatter(name='Gewichtung',
+                                 x = df_tau_s['Cycle'], 
+                                 y = df_tau_s['weight'],
+                                 error_y=dict(value=df_tau_s['std weight'].max())
+                                 ),
+                       secondary_y=True,
+                       )
+        
+        fig2.update_layout(
+            title="Zuluft",
+            xaxis_title="Zyklusnummer",
+            yaxis_title=r'Verweilzeit $\bar{t}_1$',
+            legend_title="Legende",
+            font=dict(
+                family="Segoe UI",
+                size=18,
+                color="black"
+            )
+        )
+        
+        fig2.show()
+        
+        import plotly.io as pio
+        
+        pio.renderers.default='browser'
+        pd.options.plotting.backend = "matplotlib"
+    
     #%% Marking dataframes exhaust
     """Marks every exhaust dataframe with a number for later anaysis """
     
@@ -353,89 +741,613 @@ def residence_time_sup_exh(experimentno=16, deviceno=1, periodtime=120, plot=Fal
             pass
             # print("ignore the key error")
     
+      
+    #%%%% Exporrt a file with all the exhaust curves sorted in a matrix for an excel diagram    
     df_exh_list = []
+    del dummy_df
+    dummy_df = pd.DataFrame(columns=['datetime', 'CO2_ppm', 'num'])
     for i in range(1, int(df_exh3.num.max()+1)):
+
+        try:
+            if export_sublist and len(df_sup3.loc[df_exh3["num"]==i]) > 3:
+                dummy_df = dummy_df.append(df_exh3.loc[df_exh3["num"]==(i)])
+                dummy_df = dummy_df.rename(columns = {'CO2_ppm':'CO2_ppm_{}'.format(i)})
+            
+            
+        except KeyError:
+            pass
+            # print("ignore the key error")
+
         df_exh_list.append(df_exh3.loc[df_exh3["num"]==i])
+    
+    del dummy_df["num"]
+    dummy_df.to_csv(r'D:\Users\sauerswa\wichtige Ordner\sauerswa\Codes\Python\Recirculation\export\df_exh_{}_{}.csv'.format(database, table), index=True) 
+        
+        
     #%%% Exhaust tau
     # this method can be replicated in Excel for crossverification
-    """Calculates tau based in area under the curve"""
+   
     
+    #%%%% Calculates tau based in area under the curve
     df_tau_exh = []
+    e_cyc = 0
     for e in df_exh_list:
         if len(e) > 3:
-            b = e.reset_index(drop = True)
+            
+            # %%%%% original code from DRK
+            # b = e.reset_index(drop = True)
             
             
-            b['CO2_ppm_reg'] = b.eval(res.loc[0, "equation"])    
+            # b['CO2_ppm_reg'] = b.eval(res.loc[0, "equation"])    
+            # b = b.rename(columns = {'CO2_ppm':'CO2_ppm_original', 'CO2_ppm_reg': 'CO2_ppm'})
+            # b = b.drop_duplicates(subset=['datetime'])
+            # b = b.loc[:, ["datetime", "CO2_ppm_original", "CO2_ppm"]]
+            # b = b.dropna()
+            
+            
+            
+            # b["log"] = np.log(b["CO2_ppm"])
+            
+            # diff = (b["datetime"][1] - b["datetime"][0]).seconds
+            # b["s_meas"] =  np.sqrt(np.square((b["CO2_ppm"] * accuracy2)) 
+            #                        + np.square(accuracy1) + np.square((b["CO2_ppm"] * accuracy4)) 
+            #                        + np.square(accuracy3) + np.square((b["CO2_ppm"] * accuracy6)) 
+            #                        + np.square(accuracy5)+ np.square(res.loc[0, "rse"]))
+            # ns_meas = b['s_meas'].mean()
+            # n = len(b['s_meas'])
+            
+            
+            # b["runtime"] = np.arange(0,len(b) * diff, diff)
+            
+            # b["t-te"] = b["runtime"] - b["runtime"][len(b)-1]
+            
+            # b["lnte/t"] = b["log"] - b["log"][len(b)-1]
+            
+            # b["slope"] = b["lnte/t"] / b["t-te"]
+            # slope = b["slope"].mean()
+            # #############
+            # x = b["runtime"].values
+            # y = b["log"].values
+            # from scipy.stats import linregress
+            # slope = linregress(x,y)[0]
+            # ############
+            # b.loc[[len(b)-1], "slope"] = abs(slope)
+            
+            # sumconz = b["CO2_ppm"].iloc[1:-1].sum()
+            
+            # tail = b["CO2_ppm"][len(b)-1]/abs(slope)
+            # area1 = (diff * (b["CO2_ppm"][0]/2 + sumconz +b["CO2_ppm"][len(b)-1]/2))
+            # from numpy import trapz
+            # global area2
+            # area2 = trapz(b["CO2_ppm"].values, dx=diff)                             # proof that both methods have same answer
+            
+           
+            
+            # a_rest = b["CO2_ppm"].iloc[-1]/abs(slope)
+            # a_tot = area2 + a_rest
+            
+            # if iso:
+            #     sa_num = ns_meas * (diff) * ((n - 1)/np.sqrt(n)) # Taken from DIN ISO 16000-8:2008-12, Equation D2 units are cm3.m-3.sec
+            # else:
+            #     sa_num = (diff) * ns_meas * np.sqrt((2*n-1)/2*n) # Actually sa_num should be calculated this way
+            
+            # s_lambda = b["slope"][:-1].std()/abs(b["slope"][:-1].mean())
+            # s_phi_e = b["slope"][:-1].std()/abs(b["slope"].iloc[-1])
+    
+            # s_rest = np.sqrt(pow(s_lambda,2) + pow(s_phi_e,2))
+            # sa_rest = s_rest * a_rest
+            # s_area = np.sqrt(pow(sa_num,2) + pow(sa_rest,2))/a_tot
+            # s_total = np.sqrt(pow(s_area,2) + pow(0.05,2))
+            
+            
+            # tau2 = (area2 + tail)/b["CO2_ppm"][len(b)-1]
+            # b["tau_sec"] = tau2
+            # b.loc[:, "s_total"] = s_total
+            # df_tau_exh.append(b)
+            
+            # %%%%% Structure columns
+            
+            b = e.reset_index(drop = True)                                    # Overwride the dummy dataframe "a" by the currently chosen supply decay curve.
+            b['CO2_ppm_reg'] = b.eval(res.loc[0, "equation"])                   # See: https://pandas.pydata.org/pandas-docs/stable/reference/api/pandas.DataFrame.eval.html?highlight=pandas%20dataframe%20eval#pandas.DataFrame.eval    
             b = b.rename(columns = {'CO2_ppm':'CO2_ppm_original', 'CO2_ppm_reg': 'CO2_ppm'})
             b = b.drop_duplicates(subset=['datetime'])
             b = b.loc[:, ["datetime", "CO2_ppm_original", "CO2_ppm"]]
             b = b.dropna()
             
-            
-            
-            b["log"] = np.log(b["CO2_ppm"])
-            
             diff = (b["datetime"][1] - b["datetime"][0]).seconds
-            b["s_meas"] =  np.sqrt(np.square((b["CO2_ppm"] * accuracy2)) 
-                                   + np.square(accuracy1) + np.square((b["CO2_ppm"] * accuracy4)) 
-                                   + np.square(accuracy3) + np.square((b["CO2_ppm"] * accuracy6)) 
-                                   + np.square(accuracy5)+ np.square(res.loc[0, "rse"]))
-            ns_meas = b['s_meas'].mean()
-            n = len(b['s_meas'])
-            
-            
             b["runtime"] = np.arange(0,len(b) * diff, diff)
             
-            b["t-te"] = b["runtime"] - b["runtime"][len(b)-1]
+            lenb = b["runtime"].iloc[-1]            
             
-            b["lnte/t"] = b["log"] - b["log"][len(b)-1]
-            
-            b["slope"] = b["lnte/t"] / b["t-te"]
-            slope = b["slope"].mean()
-            #############
-            x = b["runtime"].values
-            y = b["log"].values
-            from scipy.stats import linregress
-            slope = linregress(x,y)[0]
-            ############
-            b.loc[[len(b)-1], "slope"] = abs(slope)
-            
-            sumconz = b["CO2_ppm"].iloc[1:-1].sum()
-            
-            tail = b["CO2_ppm"][len(b)-1]/abs(slope)
-            area1 = (diff * (b["CO2_ppm"][0]/2 + sumconz +b["CO2_ppm"][len(b)-1]/2))
-            from numpy import trapz
-            global area2
-            area2 = trapz(b["CO2_ppm"].values, dx=diff)                             # proof that both methods have same answer
-            
-           
-            
-            a_rest = b["CO2_ppm"].iloc[-1]/abs(slope)
-            a_tot = area2 + a_rest
-            
-            sa_num = ns_meas * (diff) * ((n - 1)/np.sqrt(n)) # Taken from DIN ISO 16000-8:2008-12, Equation D2 units are cm3.m-3.sec
-            s_lambda = b["slope"][:-1].std()/abs(b["slope"][:-1].mean())
-            s_phi_e = b["slope"][:-1].std()/abs(b["slope"].iloc[-1])
+            if b["runtime"].iloc[-1]>T/2*(1-filter_maxTrel) and b["runtime"].iloc[-1]<T/2*(1+filter_maxTrel):
+                
+                if logging:
+                    prYellow("Since: {} < {} < {}, I consider the exhaust cycle {}".format(lb, lenb, ub, e_cyc))
+                
+                # %%%%% Calculating the measurement uncertainty 
+                '''
+                    based on the uncertainties of the reference sensors and the 
+                    deviation of the sensor during its calibration
+                '''
+                
+                b["std CO2_ppm"] =  np.sqrt(np.square((b["CO2_ppm"] * accuracy2)) 
+                                       + np.square(accuracy1) + np.square((b["CO2_ppm"] * accuracy4)) 
+                                       + np.square(accuracy3) + np.square((b["CO2_ppm"] * accuracy6)) 
+                                       + np.square(accuracy5)+ np.square(res.loc[0, "rse"]))
+                
+                #%%%%% Add mean concentrations indoor (V3) to the exhaust dataframe
+                # '''
+                #     mean concentrations: 
+                #         mean concentration over all measurements from
+                #         senors in the occupied space (V3)
+                # '''
+                
+                # b = b.set_index('datetime')
+                # index_list = b.index.tolist()
+                
+                # count = 0
+                # while (count < len(index_list)):     
+                #     index_list[count] = index_list[count].strftime("%Y-%m-%d %H:%M:%S")
+                #     count = count + 1
+                
+                # b.loc[:,['mean_delta', 'std mean_delta']] = dfin_dCmean.loc[index_list]
+                # b.reset_index(inplace=True)
+                # b['delta_C_mean'] = b['mean_delta'][0] - b['CO2_ppm']
+                # # b = b.rename(columns = {'CO2_ppm_original':'CO2_ppm_original', 
+                # #                         'CO2_ppm': 'CO2_ppm_reg', 
+                # #                         'mean_delta': 'indoor_mean', 
+                # #                         'delta_C': 'CO2_ppm'})
+                
+                
+                #%%%%% Add mean concentrations indoor (V3) to the exhaust dataframe
+                # '''
+                #     mean concentrations: 
+                #         Based on the calculated spatial and statistical mean air
+                #         age in the occupied space and the spacial average initial 
+                #         concentration in the occupied space at t0glob.
+                # '''
+                
+                # count = 0
+                # b['room_av'] = pd.Series(dtype='float64')
+                # b['std room_av'] = pd.Series(dtype='float64')
+                # while (count < len(b['datetime'])):     
+                #     value = mean_delta_0_room_u*unumpy.exp(-1/(alpha_mean_u)*((b['datetime'][count]-t0glob).total_seconds()/3600))
+                #     b['room_av'][count] = value.n
+                #     b['std room_av'][count] = value.s
+                #     count = count + 1            
+                
+                #%%%%% Add exhaust concentrations indoor (V3) to the exhaust dataframe
+                '''
+                    exhaust concentrations: 
+                        Based on the calculated spatial and statistical mean air
+                        age in the occupied space and the spacial average initial 
+                        concentration in the occupied space at t0glob.
+                '''
+                
+                count = 0
+                b['room_exh'] = pd.Series(dtype='float64')
+                b['std room_exh'] = pd.Series(dtype='float64')
+                while (count < len(b['datetime'])):     
+                    value = mean_delta_0_room_u*unumpy.exp(-1/(2*alpha_mean_u)*\
+                                ((b['datetime'][count]-t0glob).total_seconds()/3600))
+                    b['room_exh'][count] = value.n
+                    b['std room_exh'][count] = value.s
+                    count = count + 1
+                
+                #%%%%% Concentration level after infinit time
+                '''
+                    A step-up concentration curve approaches to a certain max
+                    after infinit time. This concentration results out of the 
+                    exhaust concentration of the room and therefore from the
+                    residence time of V3.
+                '''
+                
+                dC3e = sum(unumpy.uarray(b['room_exh'],b['std room_exh']))/\
+                        len(unumpy.uarray(b['room_exh'],b['std room_exh']))
+                
+                #%%%%% Calculate Delta C between exhaust of V3 and and exhaust of V2
+                '''
+                    
+                '''
+                
+                count = 0
+                b['dC 2e3e exh'] = pd.Series(dtype='float64')
+                b['std dC 2e3e exh'] = pd.Series(dtype='float64')
+                while (count < len(b['datetime'])):     
+                    dC_2e_u = ufloat(b["CO2_ppm"][count],b["std CO2_ppm"][count])
+                    dC_3e_u = ufloat(b["room_exh"][count],b["std room_exh"][count])
+                    value = dC_3e_u - dC_2e_u
+                    b['dC 2e3e exh'][count] = value.n
+                    b['std dC 2e3e exh'][count] = value.s
+                    count = count + 1           
+                
+                #%%%%% Calculation of the logarithmic concentration curves
+                
+                b = b.dropna()
+                b = b[b["dC 2e3e exh"] >= b["dC 2e3e exh"].iloc[0]*0.36]
+                b["log"] = np.log(b["dC 2e3e exh"])
+                b["std log"] = b['std dC 2e3e exh']/b["dC 2e3e exh"]
+                b = b.dropna()
+                
+                #%%%%% Rename columns to usual nomenclature 
+                
+                b = b.rename(columns = {'CO2_ppm':'CO2_ppm_reg', 'dC 2e3e exh':'CO2_ppm', 'std dC 2e3e exh': 's_meas'})
+                
+                #%%%%% Start of integral calculation
+                
+                # ### Calculating the measurement uncertainty based on the uncertainties of the reference sensors and the deviation of the sensor during its calibration
+                # b["s_meas"] =  np.sqrt(np.square((b["CO2_ppm"] * accuracy2)) 
+                #                        + np.square(accuracy1) + np.square((a["CO2_ppm"] * accuracy4)) 
+                #                        + np.square(accuracy3) + np.square((a["CO2_ppm"] * accuracy6)) 
+                #                        + np.square(accuracy5)+ np.square(res.loc[0, "rse"]))
+                ns_meas = b['s_meas'].mean()
+                n = len(b['s_meas'])
+                
+                # the following parameters have already been set global
+                # global sa_num, s_lambda, s_phi_e
+                # global area_sup, s_rest, s_total, a_rest, a_tot,sa_num,s_lambda, s_phi_e,s_rest, sa_rest, s_area
+                            
+                ### ISO 16000-8 option to calculate slope (defined to be calculated by Spread-Sheat/Excel)
+                b["t-te"] = b["runtime"] - b["runtime"].iloc[len(b)-1]
+                
+                b["lnte/t"] = b["log"].iloc[len(b)-1] - b["log"]                         # @DRK: The slope (as defined in ISO 16000-8) was always negative since the two subtrahend where in the wrong order.
+                
+                b["slope"] = b["lnte/t"] / b["t-te"]
+                
+                try:
+                    if method=='iso':
+                        slope = b["slope"].mean()
+                        
+                        sumconz = b["CO2_ppm"].iloc[1:-1].sum()
+                        area_sup = (diff * (b["CO2_ppm"][0]/2 + sumconz + b["CO2_ppm"][len(b)-1]/2))
+                        print('ATTENTION: ISO 16000-8 method has a weak uncertainty evaluation consider using trapezoidal method is correcting this.')
+                        
+                    elif method=='trapez':
+                        ### More acurate option to calculate the solpe of each (sub-)curve
+                        x1 = b["runtime"].values
+                        y1 = b["log"].values
+                        
+                        from scipy.stats import linregress
+                        slope = -linregress(x1,y1)[0]
+                        
+                        from numpy import trapz
+                        area_sup = trapz(b["CO2_ppm"].values, dx=diff) # proof that both methods have same answer:  area_sup_2 = area_sup_1
+                        print('ATTENTION: Trapezoidal method is used in ISO 16000-8 and here also considered in the uncertainty evaluation. However, more precise results are given by applying the Simpson-Rule.')
+                    
+                    elif method=='simpson':
+                        ### More acurate option to calculate the solpe of each (sub-)curve
+                        x1 = b["runtime"].values
+                        y1 = b["log"].values
+                        
+                        from scipy.stats import linregress
+                        slope = -linregress(x1,y1)[0]
+                        
+                        from scipy.integrate import simpson
+                        area_sup = simpson(b["CO2_ppm"].values, dx=diff, even='first') # proof that both methods have same answer:  area_sup_2 = area_s
+                    
+                    else:
+                        raise ResidenceTimeMethodError
+                        
+                except ResidenceTimeMethodError as err:
+                    print(err)
+                    
+                b["slope"].iloc[len(b)-1] = slope
     
-            s_rest = np.sqrt(pow(s_lambda,2) + pow(s_phi_e,2))
-            sa_rest = s_rest * a_rest
-            s_area = np.sqrt(pow(sa_num,2) + pow(sa_rest,2))/a_tot
-            s_total = np.sqrt(pow(s_area,2) + pow(0.05,2))
+                # tail = a["CO2_ppm"][len(a)-1]/slope
+                a_rest = b["CO2_ppm"].iloc[-1]/slope
+                a_tot = area_sup + a_rest
+                
+                tau2 = a_tot/dC3e.n
+                b["tau_sec"] = tau2
+                
+                try:    
+                    if method=='iso':
+                        # Taken from DIN ISO 16000-8:2008-12, Equation D2 units are cm3.m-3.sec
+                        sa_num = ns_meas * (diff) * ((n - 1)/np.sqrt(n))
+                        
+                        # The uncertainty of the summed trapezoidal method itself is not covered by ISO 16000-8.
+                        sa_tm = 0
+                        
+                    elif method=='trapez':
+                        # Actually sa_num (the propagated uncertainty of the measurement) should be calculated this way
+                        sa_num = (diff) * ns_meas * np.sqrt((2*n-1)/2*n) 
+                        
+                        # Aditionally the summed trapezoidal method itself has an uncertainty as well.
+                        sa_tm = diff**2/12*(b["runtime"].iloc[len(b)-1]-b["runtime"].iloc[0])*b["CO2_ppm"].iloc[0]/tau2**2
+                    
+                    elif method=='simpson':
+                        # Actually sa_num (the propagated uncertainty of the measurement) should be calculated this way
+                        sa_num = 1/3*diff*ns_meas*np.sqrt(2+20*round(n/2-0.5))
+                        
+                        # Aditionally the summed trapezoidal method itself has an uncertainty as well.
+                        sa_tm = diff**4/2880*(b["runtime"].iloc[len(b)-1]-b["runtime"].iloc[0])*b["CO2_ppm"].iloc[0]/tau2**4
+                    
+                    else:
+                        raise ResidenceTimeMethodError
+                        
+                except ResidenceTimeMethodError as err:
+                    print(err)
+                
+                s_lambda = b["slope"][:-1].std()/abs(b["slope"][:-1].mean())
+                s_phi_e = b["slope"][:-1].std()/slope
+        
+                s_rest = np.sqrt(pow(s_lambda,2) + pow(s_phi_e,2))
+                sa_rest = s_rest * a_rest
+                s_area = np.sqrt(pow(sa_num,2) + pow(sa_tm,2) + pow(sa_rest,2))/a_tot
+                s_total = np.sqrt(pow(s_area,2) + pow(dC3e.s/dC3e.n,2))
+                
+                b.loc[:, "s_total"] = s_total
+                
+                #%%%%% Calculate weighting factor 
+                sup_exh_df = sup_exh_df.set_index('datetime')
+                
+                dfslice = sup_exh_df[b["datetime"].iloc[0]:b["datetime"].iloc[len(b)-1]]
+                dfslice = dfslice.filter(['d calc exh-av', 'std d calc exh-av'])
+                b = b.set_index('datetime')
+                b = pd.concat([b, dfslice], axis = 1).reset_index()
+                del dfslice
+                
+                from scipy.integrate import simpson
+                area_weight = simpson(b["d calc exh-av"].values, dx=diff, even='first')
+                # Actually sa_num (the propagated uncertainty of the measurement) should be calculated this way
+                
+                saw_num = 1/3*diff*np.mean(b["std d calc exh-av"])*np.sqrt(2+20*round(n/2-0.5))
+                        
+                # Aditionally the summed trapezoidal method itself has an uncertainty as well.
+                saw_tm = diff**4/2880*(b["runtime"].iloc[len(b)-1]-b["runtime"].iloc[0])*ddCmax_exhav["d calc exh-av"]
+                
+                saw = np.sqrt(pow(saw_num,2) + pow(saw_tm,2))
+                
+                area_weight = ufloat(area_weight, saw)
+                weight = area_weight/(ufloat(ddCmax_exhav["d calc exh-av"],ddCmax_exhav["std d calc exh-av"])*b['runtime'].iloc[-1])
+                
+                b.loc[:, "weight"] = weight.n
+                b.loc[:, "std weight"] = weight.s
+                
+                b.loc[:, "Cycle"] = e_cyc
+    
+                sup_exh_df.reset_index(inplace=True)
+                
+                #%%%%% Summarise
+                df_tau_exh.append(b)
+            else:
+                if logging:
+                    prRed("Since the exhaust cycle {} has a runtime of {} s it is outside [{}, {}]".format(e_cyc, lenb, lb,  ub))
+                pass
             
-            
-            tau2 = (area2 + tail)/b["CO2_ppm"][len(b)-1]
-            b["tau_sec"] = tau2
-            b.loc[:, "s_total"] = s_total
-            df_tau_exh.append(b)
+            e_cyc = e_cyc + 1
+        
         else:
             pass
-    #%%% Exhaust final tau 
+    #%%%% Exhaust tau from step-up curves 
+    cyclnr_exh = []
     tau_list_exh = []
+    stot_list_exh = []
+    weight_list_exh = []
+    saw_list_exh = []
     for jdf in df_tau_exh:
+        cyclnr_exh.append(jdf["Cycle"][0])
         tau_list_exh.append(jdf["tau_sec"][0])
+        stot_list_exh.append(jdf["s_total"][0])
+        weight_list_exh.append(jdf["weight"][0])
+        saw_list_exh.append(jdf["std weight"][0])
+        
+    df_tau_e = pd.DataFrame({'Cycle':cyclnr_exh,
+                             'tau_exh':tau_list_exh, 
+                             'std tau_exh':stot_list_exh, 
+                             'weight':weight_list_exh, 
+                             'std weight':saw_list_exh})
     
-    tau_e = np.mean(tau_list_exh)
+    # Filter outliers (see https://medium.com/@stevenewmanphotography/eliminating-outliers-in-python-with-z-scores-dd72ca5d4ead)
+    df_tau_e['outliers'] = find_outliers(df_tau_e['tau_exh'])
+    df_tau_e = df_tau_e[df_tau_e['outliers']==False]
+    
+    '''
+        From the plots later on one can clearly see that the residence time 
+        of theexhaust phases increases with the number of cycles of the measu-
+        rement. This is because over time there are less and lesser marked 
+        fluid elements in the system with low residence times, since they have 
+        already been washed out. The remaining marked (with tracer) elements are  
+        those who have been stagnating or recycled till the current period. As a 
+        consequence it is quite obvious, that the residence time of V2 will
+        after infinit time approach to the residence time of V3.
+        The actual mean residence time of V2 is neighter the one measured by
+        the first period nor by the one after infinit time. 
+        
+        Since it is already known that the residence time of the exhaust phases
+        will approach to the residence time of V3 the infinit concentration 
+        where the step-up curves are approaching is the exhaust concentration
+        of V3. However, as just realised the residence times increase from 
+        one cycle to the next cycle. For the tracer measurements this means
+        that the infinity concentration of a step-up curve should be at least 
+        between the average concentration in the room and the calculated 
+        exhaust concentration of V3. Substracting the average concentration 
+        over time from the exhaust concentration over time gives a function
+        which has one maximum. Around this maximum the driving concentration
+        diverence between exhaust air and room average air should be maximal
+        and therefore the distiction between exhaust air and average room air.
+        
+        A cfac_e close to 1 will select those calculated residence times form
+        evaluated cicles around this maximum.
+    '''
+    cfac_e = 0.99
+    df_tau_e2 = df_tau_e[df_tau_e['weight']>cfac_e]
+    if len(df_tau_e2) == 0:
+        df_tau_e2 = df_tau_e.nlargest(10, 'weight')
+    
+    tau_list_exh_u = unumpy.uarray(df_tau_e2['tau_exh'],df_tau_e2['std tau_exh'])
+    weight_list_exh_u = unumpy.uarray(df_tau_e2['tau_exh'],df_tau_e2['std tau_exh']) 
+    
+    tau_e_u = sum(tau_list_exh_u*weight_list_exh_u)/sum(weight_list_exh_u)
+    
+    #%%%%% Plot: residence times of the step-up curves during exhaust-phase  
+    if plot:
+        import plotly.io as pio
+
+        pio.renderers.default='browser'
+        pd.options.plotting.backend = "matplotlib"
+        #######################################################################
+        pd.options.plotting.backend = "plotly"
+        
+        import plotly.io as pio
+        
+        pio.renderers.default='browser'
+        import plotly.express as px
+        import plotly.graph_objects as go
+        from plotly.subplots import make_subplots
+
+        # Create figure with secondary y-axis
+        fig = make_subplots(specs=[[{"secondary_y": True}]])
+                       
+        fig.add_trace(go.Scatter(name='Verweilzeit',
+                                 x = df_tau_e['Cycle'], 
+                                 y = df_tau_e['tau_exh'],
+                                 error_y=dict(value=df_tau_e['std tau_exh'].max())
+                                 ),
+                       secondary_y=False,
+                       )
+        
+        
+        fig.add_trace(go.Scatter(name='Gewichtung',
+                                 x = df_tau_e['Cycle'], 
+                                 y = df_tau_e['weight'],
+                                 error_y=dict(value=df_tau_e["std weight"].max())
+                                 ),
+                       secondary_y=True,
+                       )
+        
+        fig.update_layout(
+            title="Abluft",
+            xaxis_title="Zyklusnummer",
+            yaxis_title=r'Verweilzeit $\bar{t}_2$',
+            legend_title="Legende",
+            font=dict(
+                family="Segoe UI",
+                size=18,
+                color="black"
+            )
+        )
+        
+        fig.show()
+        
+        import plotly.io as pio
+        
+        pio.renderers.default='browser'
+        pd.options.plotting.backend = "matplotlib"
+     
+    #%%%% Calculating the period number expected delivering the expected mean residence time of V2
+    '''
+        From the plots above one can clearly see that the residence time of the
+        exhaust phases increases with the number of cycles of the measurement.
+        This is because over time there are less and lesser marked fluid 
+        elements in the system with low residence times since they have 
+        already been washed out. The remaining marked (with tracer) elements are  
+        those who have been stagnating or recycled till the current period. As a 
+        consequence it is quite obvious, that the residence time of V2 will
+        after infinit time approach to the residence time of V3.
+        The actual mean residence time of V2 is neighter the one measured by
+        the first period nor by the one after infinit time. The "mean index"
+        of the period representing the best value for the residence time of V2
+        has to be calculated by a similar procedure as the residence times 
+        themsleves.
+        
+        Since it is already known that the residence time of the exhaust phases
+        will approach to the residence time of V3 the infinit concentration 
+        where the step-up curves are approaching is the exhaust concentration
+        of V3. However, as just realised the residence times increase from 
+        one cycle to the next cycle. For the tracer measurements this means
+        that the infinity concentration of a step-up curve should be at least 
+        between the average concentration in the room and the calculated 
+        exhaust concentration of V3. Substracting the average concentration 
+        over time from the exhaust concentration over time gives a function
+        which carries information about the size of the interval of possible 
+        concentrations which fullfill this criterion
+    '''
+    
+    
+    # df_indexm_exh = []
+
+    
+    # #%%%%% Calculate Delta tau between exhaust of tau_3 and and exhaust of tau_2
+    # '''       
+    # '''
+    
+    # count = 0
+    # df_tau_e['dtau 2e3e exh'] = pd.Series(dtype='float64')
+    # df_tau_e['std dtau 2e3e exh'] = pd.Series(dtype='float64')
+    # while (count < len(b['datetime'])):     
+    #     dtau_2e_u = ufloat(df_tau_e["nom"][count],df_tau_e["std"][count])
+    #     value = 2*alpha_mean_u*3600 - dtau_2e_u
+    #     df_tau_e['dtau 2e3e exh'][count] = value.n
+    #     df_tau_e['std dtau 2e3e exh'][count] = value.s
+    #     count = count + 1           
+    
+    # #%%%%% Calculation of the logarithmic concentration curves
+    
+    # df_tau_e["log"] = np.log(df_tau_e['dtau 2e3e exh'])
+    # df_tau_e["std log"] = df_tau_e['std dtau 2e3e exh']/df_tau_e['dtau 2e3e exh']
+    # df_tau_e = df_tau_e.dropna()
+    
+    # #%%%%% Start of integral calculation
+    
+    # diff = 1
+    
+    # ns_meas = df_tau_e['std dtau 2e3e exh'].mean()
+    # n = len(df_tau_e['std dtau 2e3e exh'])
+                
+    # # Because the evaluation of the residence times t0glob and t0 --> Will be considered differently
+    # #df_tau_e['index'] = df_tau_e['index'] + fdelay
+
+    # df_tau_e['index'] = np.arange(0,len(df_tau_e) * diff, diff)
+    
+    # ### ISO 16000-8 option to calculate slope (defined to be calculated by Spread-Sheat/Excel)
+    # df_tau_e["i-ie"] = df_tau_e['index'] - df_tau_e['index'][len(df_tau_e)-1]
+    
+    # df_tau_e["lnie/i"] = df_tau_e["log"][len(df_tau_e)-1] - df_tau_e["log"]                         # @DRK: The slope (as defined in ISO 16000-8) was always negative since the two subtrahend where in the wrong order.
+    
+    # df_tau_e["slope"] = df_tau_e["lnie/i"] / df_tau_e["i-ie"]
+    
+    
+    # ### More acurate option to calculate the solpe of each (sub-)curve
+    # x1 = df_tau_e['index'].values
+    # y1 = df_tau_e["log"].values
+            
+    # from scipy.stats import linregress
+    # slope = -linregress(x1,y1)[0]
+            
+    # from scipy.integrate import simpson
+    # area_sup = simpson(df_tau_e["dtau 2e3e exh"].values, dx=diff, even='first') # proof that both methods have same answer:  area_sup_2 = area_s
+        
+        
+    # df_tau_e.loc[[len(b)-1], "slope"] = slope
+
+    # # tail = a["CO2_ppm"][len(a)-1]/slope
+    # a_rest = df_tau_e["dtau 2e3e exh"].iloc[-1]/slope
+    # a_tot = area_sup + a_rest
+    
+    # indexm2 = a_tot/(2*alpha_mean_u.n*3600)
+    # df_tau_e["indexm2"] = indexm2
+    
+    
+    # # Actually sa_num (the propagated uncertainty of the measurement) should be calculated this way
+    # sa_num = 1/3*diff*ns_meas*np.sqrt(2+20*round(n/2-0.5))
+    
+    # # Aditionally the summed trapezoidal method itself has an uncertainty as well.
+    # sa_tm = diff**4/2880*(df_tau_e['index'].loc[len(df_tau_e)-1]-df_tau_e['index'][0])*df_tau_e["dtau 2e3e exh"][0]/indexm2**4
+    
+    
+    # s_lambda = df_tau_e["slope"][:-1].std()/abs(df_tau_e["slope"][:-1].mean())
+    # s_phi_e = df_tau_e["slope"][:-1].std()/slope
+
+    # s_rest = np.sqrt(pow(s_lambda,2) + pow(s_phi_e,2))
+    # sa_rest = s_rest * a_rest
+    # s_area = np.sqrt(pow(sa_num,2) + pow(sa_tm,2) + pow(sa_rest,2))/a_tot
+    # s_total = np.sqrt(pow(s_area,2) + pow(df_tau_e["std dtau 2e3e exh"][0]/df_tau_e["dtau 2e3e exh"][0],2))
+    
+    # df_tau_e.loc[:, "s_total"] = s_total
+
+    # df_tau_exh.append(b)
+    
     
     #%% returned values
     """
@@ -446,11 +1358,11 @@ def residence_time_sup_exh(experimentno=16, deviceno=1, periodtime=120, plot=Fal
             tau_s = exhaust residence time of the recirculation volume 
                     ("supply residence time")
     """
-    tn = cend.index[0]
-    return [t0, tn, tau_e, tau_s]
+
+    return [t0, tn, tau_e_u, df_tau_e, tau_s_u, df_tau_s]
 
     #%% Final result print
-    prYellow("Recirculation:  {} %".format(round((tau_s/tau_e)*100) )  )
+    prYellow("Recirculation:  {} %".format(round((tau_s_u.n/tau_e_u.n)*100) )  )
 
 
 """

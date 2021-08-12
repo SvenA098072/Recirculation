@@ -14,8 +14,9 @@ from easygui import *
 
 def prRed(skk): print("\033[31;1;m {}\033[00m" .format(skk)) 
 def prYellow(skk): print("\033[33;1;m {}\033[00m" .format(skk)) 
-engine = create_engine("mysql+pymysql://wojtek:Password#102@wojtek.mysql.database.azure.com/",\
-                      pool_pre_ping=True) # Cloud server address
+# engine = create_engine("mysql+pymysql://wojtek:Password#102@wojtek.mysql.database.azure.com/",\
+#                       pool_pre_ping=True) # Cloud server address
+engine = create_engine("mysql+pymysql://root:Password123@localhost/",pool_pre_ping=True)
 #%%
 #%% control plot properties
 import datetime
