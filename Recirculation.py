@@ -40,7 +40,7 @@ class ResidenceTimeMethodError(ValueError):
     
 #%% Function shape to be fitted for infinity concentration of tau_exh
 def expfitshape(x, a, b):
-    return a*b/x*np.exp(-a/x)
+    return a*x*np.exp(-x/b)
 
 #%% Function to find outliers
 def find_outliers(col):
@@ -50,7 +50,7 @@ def find_outliers(col):
     return pd.Series(idx_outliers,index=col.index)
 
 
-def residence_time_sup_exh(experimentno=3, deviceno=0, periodtime=120, 
+def residence_time_sup_exh(experiment='W_I_e0_ESHL', aperture_sensor = "2l", periodtime=120, 
                            experimentname=False, plot=False, 
                            export_sublist=False, method='simpson',
                            filter_maxTrel=0.25, logging=False):
@@ -91,9 +91,7 @@ def residence_time_sup_exh(experimentno=3, deviceno=0, periodtime=120,
     	
     plt.close("all")
     
-    #%% Load relevant data
-    t = experimentno # to select the experiment (see Timeframes.xlsx)
-    l = deviceno # to select the sensor in the ventilation device
+    
     
     if periodtime is None:
         T = 120
@@ -114,87 +112,34 @@ def residence_time_sup_exh(experimentno=3, deviceno=0, periodtime=120,
     # short-names of the measurements, all the start and end times, the DB-name 
     # of the measurement and the required table-names of the DB/schema is loaded into a dataframe. 
     
-    start, end = str(time["Start"][t] - dt.timedelta(minutes=20)), str(time["End"][t]) # selects start and end times to slice dataframe
+    #%% Load relevant data
+    t = time["timeframes_id"][time.index[time['short_name'].isin([experiment])==True].tolist()[0]]-1 # to select the experiment (see Timeframes.xlsx)
     
-    t0glob = time["Start"][t]
+    start = str(time["Start"][time.index[time['short_name'].isin([experiment])==True].tolist()[0]] - dt.timedelta(minutes=20))
+    end = str(time["End"][time.index[time['short_name'].isin([experiment])==True].tolist()[0]])
+
+    t0 = time["Start"][t]
     # actual start of the experiment, out of the dataframe "time"
+        
+     
+    table = time["tables"][t].split(",")                                         #Name of the ventilation device
+    try: 
+        if aperture_sensor in aperture_sensor:
+            pass
+        else:
+            raise ValueError
+    except ValueError:
+        prYellow('ValueError: The sensor you selected is not an aperture sensor of the experiment. Select one of these: {}'.format(table))
+        return 'ValueError: The sensor you selected is not an aperture sensor of the experiment. Select one of these: {}'.format(table)
     
-    fdelay = 2
-    
-    t0 = time["Start"][t] + dt.timedelta(seconds=fdelay*T)                                 
-    # actual start of the experiment, out of the dataframe "time" + device periods,
-    # since the decay of the moving average curve of the subsystem 23 is at the 
-    # beginning falsified by the drop from the accumulation level in subsystem 3.
-    # The drop is the response signal of the entire system 123. After this
-    # about 2*T the falisification due to the respones of the entire system is
-    # negligable.
-    
-    table = time["tables"][t].split(",")[l]                                         #Name of the ventilation device
-    
-    
-    dum = [["Experiment",time["short_name"][t] ], ["Sensor", table]]                # Creates a list of 2 rows filled with string tuples specifying the experiment and the sensor.
+    dum = [["Experiment", experiment ], ["Sensor", aperture_sensor]]                # Creates a list of 2 rows filled with string tuples specifying the experiment and the sensor.
     if experimentname:
         print(tabulate(dum))                                                            # Prints the inut details in a table
     else:
         pass
     
-    database = time["database"][t]                                                  # Selects the name of the database as a string 
+    database = time["database"][time.index[time['short_name'].isin([experiment])==True].tolist()[0]]    # Selects the name of the database as a string 
     
-    #%%% Load data for the occupied space V3
-    
-    experimentglo = CBO_ESHL(experiment = dum[0][1], sensor_name = dum[1][1])
-    
-    alpha_mean, df_alpha, df_indoor = experimentglo.mean_curve()
-    alpha_mean_u = ufloat(alpha_mean[0], alpha_mean[1])
-    
-    dfin_dCmean = df_indoor.loc[:,['mean_delta', 'std mean_delta']]
-    
-    mean_delta_0_room = dfin_dCmean.loc[t0glob]
-    mean_delta_0_room_u = ufloat(mean_delta_0_room[0],mean_delta_0_room[1])
-   
-    #%%%%% Add mean and exhaust concentrations indoor (V3) to the dfin_dCmean
-    '''
-        mean concentrations: 
-            Based on the calculated spatial and statistical mean air
-            age in the occupied space and the spacial average initial 
-            concentration in the occupied space at t0glob.
-    '''
-    
-    count = 0
-    dfin_dCmean['room_av'] = pd.Series(dtype='float64')
-    dfin_dCmean['std room_av'] = pd.Series(dtype='float64')
-    dfin_dCmean['room_exh'] = pd.Series(dtype='float64')
-    dfin_dCmean['std room_exh'] = pd.Series(dtype='float64')
-    dfin_dCmean.reset_index(inplace=True)
-    
-    while (count < len(dfin_dCmean)):     
-        
-        '''
-        mean concentrations: 
-            Based on the calculated spatial and statistical mean air
-            age in the occupied space and the spacial average initial 
-            concentration in the occupied space at t0glob.
-        '''    
-        value = mean_delta_0_room_u*unumpy.exp(-1/(alpha_mean_u)*\
-                    ((dfin_dCmean['datetime'][count]-t0glob).total_seconds()/3600))
-        dfin_dCmean['room_av'][count] = value.n
-        dfin_dCmean['std room_av'][count] = value.s
-        
-        '''
-        exhaust concentrations: 
-            Based on the calculated spatial and statistical mean air
-            age in the occupied space and the spacial average initial 
-            concentration in the occupied space at t0glob.
-        '''
-        value = mean_delta_0_room_u*unumpy.exp(-1/(2*alpha_mean_u)*\
-                    ((dfin_dCmean['datetime'][count]-t0glob).total_seconds()/3600))
-        dfin_dCmean['room_exh'][count] = value.n
-        dfin_dCmean['std room_exh'][count] = value.s
-        
-        count = count + 1
-    
-    dfin_dCmean = dfin_dCmean.set_index('datetime')           
-        
     #%%% Load background data
        
     background, dummy = outdoor(str(t0), str(end), plot = False)                    # Syntax to call the background concentration function, "dummy" is only necessary since the function "outdoor" returns a tuple of a dataframe and a string.
@@ -203,7 +148,7 @@ def residence_time_sup_exh(experimentno=3, deviceno=0, periodtime=120,
     #%%% Load data of the experiment and the selected sensor
     
     df = pd.read_sql_query("SELECT * FROM {}.{} WHERE datetime BETWEEN '{}' AND\
-                           '{}'".format(database, table, start, end), con = engine)
+                           '{}'".format(database, aperture_sensor, start, end), con = engine)
     df = df.loc[:,["datetime", "CO2_ppm"]]
     df["original"] = df["CO2_ppm"]                                                  # Copies the original absolute CO2-concentrations data form CO2_ppm in a "backup"-column originals 
     df.columns = ["datetime", "original", "CO2_ppm"]                                # changes the order of the columns to the defined one
@@ -220,26 +165,35 @@ def residence_time_sup_exh(experimentno=3, deviceno=0, periodtime=120,
     diff = (df["datetime"][1]-df["datetime"][0]).seconds                            # integer diff in s; Calculates the length of the time interval between two timestamps 
     df = df.set_index("datetime")                                                   # Resets the index of the dataframe df from the standard integer {0, 1, 2, ...} to be exchanged by the datetime column containing the timestamps.
     
-    while not(t0 in df.index.to_list()):                                            # The t0 from the excel sheet may not be precice that the sensor starts 
-        t0 = t0 + dt.timedelta(seconds=1)                                           # - starts at the same time so i used this while loop to calculate the 
-        print(t0)                                                                   # - the closest t0 after the original t0
+    t01 = t0
+    while not(t01 in df.index.to_list()):                                            # The t0 from the excel sheet may not be precice that the sensor starts 
+        t01 = t01 + dt.timedelta(seconds=1)                                 # - starts at the same time so i used this while loop to calculate the 
+                                                                          # - the closest t0 after the original t0
     
     df["roll"] = df["CO2_ppm"].rolling(int(T/diff)).mean()                          # moving average for 2 minutes, used to calculate Cend; T = 120s is the period time of the push-pull ventilation devices which compose the ventilation system. 
+    df["roll"] = df["roll"].fillna(method='bfill')
     
+    c0 = df["roll"].loc[t01]                                                      # C0; @DRK: Check if c0 = df["roll"].loc[t0] is better here. ## ORIGINAL: c0 = df["CO2_ppm"].loc[t0] 
+    Cend37 = round((c0)*0.37, 2)  
+    df2 = df                                                  # @DRK: From this line 101 schould be changed.   
     
-    
-    c0 = df["roll"].loc[t0]                                                      # C0; @DRK: Check if c0 = df["roll"].loc[t0] is better here. ## ORIGINAL: c0 = df["CO2_ppm"].loc[t0] 
-    Cend37 = round((c0)*0.37, 2)                                                    # @DRK: From this line 101 schould be changed.   
-    
-    cend = df.loc[df["roll"].le(Cend37)]                                            # Cend: Sliced df of the part of the decay curve below the 37 percent limit
+    cend = df.loc[df2["roll"].le(Cend37)]                                            # Cend: Sliced df of the part of the decay curve below the 37 percent limit
+    tn = df.index[-1]
     
     if len(cend) == 0:                                                              # Syntax to find the tn of the experiment
-        tn = str(df.index[-1])
         print("The device has not reached 37% of its initial concentration")
     else:
-        tn = str(cend.index[0])
+        pass
     
-   
+    
+    #%%% Increase resolution
+    
+    df = df.resample("5S").mean()
+       
+    df['original'] = df['original'].interpolate(method='polynomial', limit_direction='forward',order=2)
+    df['CO2_ppm'] = df['CO2_ppm'].interpolate(method='polynomial', limit_direction='forward',order=2)
+    df['roll'] = df['roll'].interpolate(method='polynomial', limit_direction='forward',order=2)
+    
     #%%% Find max min points
     from scipy.signal import argrelextrema                                          # Calculates the relative extrema of data.
     n = round(T / (2*diff))                                                         # How many points on each side to use for the comparison to consider comparator(n, n+x) to be True.; @DRK: This value should depend on diff and T (period time of the push-pull devices). n = T / (2*diff)
@@ -247,16 +201,86 @@ def residence_time_sup_exh(experimentno=3, deviceno=0, periodtime=120,
     df['max'] = df.iloc[argrelextrema(df['CO2_ppm'].values, np.greater_equal,\
                                       order=n)[0]]['CO2_ppm']                       # Gives all the peaks; "np.greater_equal" is a callable function which argrelextrema shall use to compare to arrays before and after the point currently evaluated by argrelextrema.
     df['min'] = df.iloc[argrelextrema(df['CO2_ppm'].values, np.less_equal,\
-                                      order=n)[0]]['CO2_ppm']                       # Gives all the valleys; "np.less_equal" is a callable function which argrelextrema shall use to compare to arrays before and after the point currently evaluated by argrelextrema.
-     #%%% Plot Original
+                                      order=n)[0]]['CO2_ppm']                       # Gives all the valleys; "np.less_equal" is a callable function which argrelextrema shall use to compare to arrays before and after the point currently evaluated by argrelextrema. 
+        
+    #%%% Plot Original
     
     if plot:
         fig,ax = plt.subplots()
-        df.plot(title = "original " + time["short_name"][t], color = [ 'silver', 'green', 'orange'], ax = ax)
+        df.plot(title = "original " + experiment, color = [ 'silver', 'green', 'orange'], ax = ax)
         df['max'].plot(marker='o', ax = ax)                                             # This needs to be verified with the graph if python recognizes all peaks
         df['min'].plot(marker="v", ax = ax)                                             # - and valleys. If not adjust the n value.
     else:
         pass
+    
+    #%%% Load data for the occupied space V3
+    
+    experimentglo = CBO_ESHL(experiment = dum[0][1], aperture_sensor = aperture_sensor)
+    
+    alpha_mean, df_alpha, df_indoor = experimentglo.mean_curve()
+    alpha_mean_u = ufloat(alpha_mean[0], alpha_mean[1])
+    
+    dfin_dCmean = df_indoor.loc[:,['mean_delta', 'std mean_delta']]
+    tmeancurve = dfin_dCmean.index.tolist()[0]
+    while not(tmeancurve in df.index.to_list()):                                            # The t0 from the excel sheet may not be precice that the sensor starts 
+        tmeancurve = tmeancurve + dt.timedelta(seconds=1)
+    datetime_index = pd.date_range(tmeancurve, dfin_dCmean.index.tolist()[-1], freq='5s')
+    dfin_dCmean = dfin_dCmean.reindex(datetime_index, method='bfill')
+    
+    if t0 < dfin_dCmean.index.tolist()[0]:
+        mean_delta_0_room  = dfin_dCmean.loc[dfin_dCmean.index.tolist()[0]]
+        deltat_mean = dfin_dCmean.index.tolist()[0] - t0
+        prYellow('ATTENTION: mean_delta_room starts {} after t0 = {}!'.format(deltat_mean, t0))
+    else:
+        mean_delta_0_room = dfin_dCmean.loc[t0]
+    mean_delta_0_room_u = ufloat(mean_delta_0_room[0],mean_delta_0_room[1])
+   
+    #%%%%% Add mean and exhaust concentrations indoor (V3) to the dfin_dCmean
+    '''
+        mean concentrations: 
+            Based on the calculated spatial and statistical mean air
+            age in the occupied space and the spacial average initial 
+            concentration in the occupied space at t0.
+    '''
+    
+    # count = 0
+    dfin_dCmean['room_av'] = pd.Series(dtype='float64')
+    dfin_dCmean['std room_av'] = pd.Series(dtype='float64')
+    dfin_dCmean['room_exh'] = pd.Series(dtype='float64')
+    dfin_dCmean['std room_exh'] = pd.Series(dtype='float64')
+    dfin_dCmean.reset_index(inplace=True)
+    if 'index' in dfin_dCmean.columns:
+        dfin_dCmean = dfin_dCmean.rename(columns={"index": "datetime"})
+    else:
+        pass
+    
+    for count in range(len(dfin_dCmean)):     
+        deltat = dfin_dCmean['datetime'][count]-t0
+        deltat = deltat.total_seconds()/3600
+        '''
+        mean concentrations: 
+            Based on the calculated spatial and statistical mean air
+            age in the occupied space and the spacial average initial 
+            concentration in the occupied space at t0.
+        '''    
+        value = mean_delta_0_room_u*umath.exp(-1/(alpha_mean_u)*deltat)
+        dfin_dCmean['room_av'][count] = value.n
+        dfin_dCmean['std room_av'][count] = value.s
+        
+        '''
+        exhaust concentrations: 
+            Based on the calculated spatial and statistical mean air
+            age in the occupied space and the spacial average initial 
+            concentration in the occupied space at t0.
+        '''
+        value = mean_delta_0_room_u*umath.exp(-1/(2*alpha_mean_u)*deltat)
+        dfin_dCmean['room_exh'][count] = value.n
+        dfin_dCmean['std room_exh'][count] = value.s
+        
+        # count = count + 1
+    
+    dfin_dCmean = dfin_dCmean.set_index('datetime')           
+        
     
     #%%% Filter supply and exhaust phases 
     df.loc[df['min'] > -400, 'mask'] = False                                        # Marks all min as False; @DRK: Why is this "-400" necessary?                         
@@ -265,7 +289,7 @@ def residence_time_sup_exh(experimentno=3, deviceno=0, periodtime=120,
     df = df.dropna(subset= ["mask"])                                                # In case there are NaNs left (at the beginning of the array) it drops/removes the whole time stamps/rows.
     df["sup"] = df["mask"]                                                          # Create seperate columns for sup and exhaust; @DRK: Why is this necessary? At the end of these six lines of code df has 3 column {mask, sup, exh} containing all there the same data.
     df["exh"] = df["mask"]
-    
+        
     
     df.loc[df['min'] > 0, 'sup'] = True                                             # The valleys have to be belong to supply as well 
     df.loc[df['max'] > 0, 'exh'] = False                                            # The peaks have to belong to max, before it was all filled be backfill
@@ -288,10 +312,11 @@ def residence_time_sup_exh(experimentno=3, deviceno=0, periodtime=120,
                               "calc room_av", "std calc room_av",  
                               "calc room_exh", "std calc room_exh", 
                               "supply", "exhaust"]
-    sup_exh_df['d calc exh-av'] = np.sqrt(np.power(sup_exh_df["calc room_exh"],2)\
-                                          - np.power(sup_exh_df["calc room_av"],2))
-    sup_exh_df['std d calc exh-av'] = np.sqrt(np.power(sup_exh_df["std calc room_exh"],2)\
-                                              - np.power(sup_exh_df["std calc room_av"],2))
+    rows = sup_exh_df[~sup_exh_df['calc room_exh'].isnull()].index.tolist()
+    sup_exh_df['d calc exh-av'] = np.sqrt(np.power(sup_exh_df["calc room_exh"].loc[rows],2)\
+                                          - np.power(sup_exh_df["calc room_av"].loc[rows],2))
+    sup_exh_df['std d calc exh-av'] = np.sqrt(np.power(sup_exh_df["std calc room_exh"].loc[rows],2)\
+                                              + np.power(sup_exh_df["std calc room_av"].loc[rows],2))
     
     #%%%%%% Calculation of the weight factor of the current device period
             
@@ -303,11 +328,11 @@ def residence_time_sup_exh(experimentno=3, deviceno=0, periodtime=120,
 #     if plot:
 #         #%%%% supply
 #         plt.figure()
-#         a["CO2_ppm"].plot(title = "supply " + time["short_name"][t]) 
+#         a["CO2_ppm"].plot(title = "supply " + experiment) 
 #         a["CO2_ppm"].plot(title = "supply") 
 #           
 #         #%%%% exhaust
-#         b["CO2_ppm"].plot(title = "exhaust " + time["short_name"][t])                                            # Similar procedure is repeated from exhaust
+#         b["CO2_ppm"].plot(title = "exhaust " + experiment)                                            # Similar procedure is repeated from exhaust
 #         plt.figure()
 #         b["CO2_ppm"].plot(title = "exhaust")                                            # Similar procedure is repeated from exhaust
 #         
@@ -324,7 +349,6 @@ def residence_time_sup_exh(experimentno=3, deviceno=0, periodtime=120,
     if plot:
         pd.options.plotting.backend = "plotly" # NOTE: This changes the plot backend which should be resetted after it is not needed anymore. Otherwise it will permanently cause problems in future, since it is a permanent change.
     
-        import plotly.express as px
         import plotly.graph_objects as go
         fig = go.Figure()
         fig.add_trace(go.Scatter(#title = time["short_name"][t],
@@ -354,6 +378,19 @@ def residence_time_sup_exh(experimentno=3, deviceno=0, periodtime=120,
                       )
         fig.add_trace(go.Scatter(name='supply',x=sup_exh_df["datetime"], y = sup_exh_df["supply"]))
         fig.add_trace(go.Scatter(name='exhaust',x=sup_exh_df["datetime"], y = sup_exh_df["exhaust"]))
+        
+        fig.update_layout(
+            title="{} {}".format(database, aperture_sensor),
+            xaxis_title="Zeit t in hh:mm:ss",
+            yaxis_title=r'Verweilzeit $\bar{t}_1$',
+            legend_title="Legende",
+            font=dict(
+                family="Segoe UI",
+                size=18,
+                color="black"
+            )
+        )
+        
         fig.show()
         
         import plotly.io as pio
@@ -368,7 +405,7 @@ def residence_time_sup_exh(experimentno=3, deviceno=0, periodtime=120,
     n = 1
     df_sup3 = df_sup2.copy().reset_index()                                          
     
-    start_date = str(t0); end_date = tn # CHANGE HERE 
+    start_date = str(t0); end_date = str(tn) # CHANGE HERE 
     
     mask = (df_sup3['datetime'] > start_date) & (df_sup3['datetime'] <= end_date)
     
@@ -392,23 +429,23 @@ def residence_time_sup_exh(experimentno=3, deviceno=0, periodtime=120,
         
     #%%%% Exporrt a file with all the supply curves sorted in a matrix for an excel diagram    
     df_sup_list = []
-    dummy_df = pd.DataFrame(columns=['datetime', 'CO2_ppm', 'num'])
-    for i in range(1, int(df_sup3.num.max()+1)):
+    # dummy_df = pd.DataFrame(columns=['datetime', 'CO2_ppm', 'num'])
+    # for i in range(1, int(df_sup3['num'].max()+1)):
 
-        try:
-            if export_sublist and len(df_sup3.loc[df_sup3["num"]==i]) > 3:
-                dummy_df = dummy_df.append(df_sup3.loc[df_sup3["num"]==(i)])
-                dummy_df = dummy_df.rename(columns = {'CO2_ppm':'CO2_ppm_{}'.format(i)})
+    #     try:
+    #         if export_sublist and len(df_sup3.loc[df_sup3["num"]==i]) > 3:
+    #             dummy_df = dummy_df.append(df_sup3.loc[df_sup3["num"]==(i)])
+    #             dummy_df = dummy_df.rename(columns = {'CO2_ppm':'CO2_ppm_{}'.format(i)})
             
             
-        except KeyError:
-            pass
-            # print("ignore the key error")
+    #     except KeyError:
+    #         pass
+    #         # print("ignore the key error")
 
-        df_sup_list.append(df_sup3.loc[df_sup3["num"]==i])
+    #     df_sup_list.append(df_sup3.loc[df_sup3["num"]==i])
     
-    del dummy_df["num"]
-    dummy_df.to_csv(r'D:\Users\sauerswa\wichtige Ordner\sauerswa\Codes\Python\Recirculation\export\df_sup_{}_{}.csv'.format(database, table), index=True) 
+    # del dummy_df["num"]
+    # dummy_df.to_csv(r'D:\Users\sauerswa\wichtige Ordner\sauerswa\Codes\Python\Recirculation\export\df_sup_{}_{}.csv'.format(database, aperture_sensor), index=True) 
     
     #%%% Supply tau 
     # This method can be replicated in excel for crossreference
@@ -431,7 +468,7 @@ def residence_time_sup_exh(experimentno=3, deviceno=0, periodtime=120,
     '''Calibration data for the particular sensor alone is filtered '''
     global res
 
-    res = reg_result[reg_result['sensor'].str.lower() == table].reset_index(drop = True) # Contains the sensor calibration data and especially the calibration curve.
+    res = reg_result[reg_result['sensor'].str.lower() == aperture_sensor].reset_index(drop = True) # Contains the sensor calibration data and especially the calibration curve.
     accuracy1 = 50 # it comes from the equation of uncertainity for testo 450 XL
     accuracy2 = 0.02 # ±(50 ppm CO2 ±2% of mv)(0 to 5000 ppm CO2 )
             
@@ -675,7 +712,6 @@ def residence_time_sup_exh(experimentno=3, deviceno=0, periodtime=120,
         import plotly.io as pio
         
         pio.renderers.default='browser'
-        import plotly.express as px
         import plotly.graph_objects as go
         from plotly.subplots import make_subplots
 
@@ -744,24 +780,24 @@ def residence_time_sup_exh(experimentno=3, deviceno=0, periodtime=120,
       
     #%%%% Exporrt a file with all the exhaust curves sorted in a matrix for an excel diagram    
     df_exh_list = []
-    del dummy_df
-    dummy_df = pd.DataFrame(columns=['datetime', 'CO2_ppm', 'num'])
-    for i in range(1, int(df_exh3.num.max()+1)):
+    # del dummy_df
+    # dummy_df = pd.DataFrame(columns=['datetime', 'CO2_ppm', 'num'])
+    # for i in range(1, int(df_exh3.num.max()+1)):
 
-        try:
-            if export_sublist and len(df_sup3.loc[df_exh3["num"]==i]) > 3:
-                dummy_df = dummy_df.append(df_exh3.loc[df_exh3["num"]==(i)])
-                dummy_df = dummy_df.rename(columns = {'CO2_ppm':'CO2_ppm_{}'.format(i)})
+    #     try:
+    #         if export_sublist and len(df_sup3.loc[df_exh3["num"]==i]) > 3:
+    #             dummy_df = dummy_df.append(df_exh3.loc[df_exh3["num"]==(i)])
+    #             dummy_df = dummy_df.rename(columns = {'CO2_ppm':'CO2_ppm_{}'.format(i)})
             
             
-        except KeyError:
-            pass
-            # print("ignore the key error")
+    #     except KeyError:
+    #         pass
+    #         # print("ignore the key error")
 
-        df_exh_list.append(df_exh3.loc[df_exh3["num"]==i])
+    #     df_exh_list.append(df_exh3.loc[df_exh3["num"]==i])
     
-    del dummy_df["num"]
-    dummy_df.to_csv(r'D:\Users\sauerswa\wichtige Ordner\sauerswa\Codes\Python\Recirculation\export\df_exh_{}_{}.csv'.format(database, table), index=True) 
+    # del dummy_df["num"]
+    # dummy_df.to_csv(r'D:\Users\sauerswa\wichtige Ordner\sauerswa\Codes\Python\Recirculation\export\df_exh_{}_{}.csv'.format(database, aperture_sensor), index=True) 
         
         
     #%%% Exhaust tau
@@ -904,14 +940,14 @@ def residence_time_sup_exh(experimentno=3, deviceno=0, periodtime=120,
                 #     mean concentrations: 
                 #         Based on the calculated spatial and statistical mean air
                 #         age in the occupied space and the spacial average initial 
-                #         concentration in the occupied space at t0glob.
+                #         concentration in the occupied space at t0.
                 # '''
                 
                 # count = 0
                 # b['room_av'] = pd.Series(dtype='float64')
                 # b['std room_av'] = pd.Series(dtype='float64')
                 # while (count < len(b['datetime'])):     
-                #     value = mean_delta_0_room_u*unumpy.exp(-1/(alpha_mean_u)*((b['datetime'][count]-t0glob).total_seconds()/3600))
+                #     value = mean_delta_0_room_u*unumpy.exp(-1/(alpha_mean_u)*((b['datetime'][count]-t0).total_seconds()/3600))
                 #     b['room_av'][count] = value.n
                 #     b['std room_av'][count] = value.s
                 #     count = count + 1            
@@ -921,15 +957,15 @@ def residence_time_sup_exh(experimentno=3, deviceno=0, periodtime=120,
                     exhaust concentrations: 
                         Based on the calculated spatial and statistical mean air
                         age in the occupied space and the spacial average initial 
-                        concentration in the occupied space at t0glob.
+                        concentration in the occupied space at t0.
                 '''
                 
                 count = 0
                 b['room_exh'] = pd.Series(dtype='float64')
                 b['std room_exh'] = pd.Series(dtype='float64')
                 while (count < len(b['datetime'])):     
-                    value = mean_delta_0_room_u*unumpy.exp(-1/(2*alpha_mean_u)*\
-                                ((b['datetime'][count]-t0glob).total_seconds()/3600))
+                    value = mean_delta_0_room_u*umath.exp(-1/(2*alpha_mean_u)*\
+                                    ((b['datetime'][count]-t0).total_seconds()/3600))
                     b['room_exh'][count] = value.n
                     b['std room_exh'][count] = value.s
                     count = count + 1
@@ -1264,11 +1300,10 @@ def residence_time_sup_exh(experimentno=3, deviceno=0, periodtime=120,
         concentrations which fullfill this criterion
     '''
     
-    
     # df_indexm_exh = []
 
     
-     #%%%%% Calculate Delta tau between exhaust of tau_3 and and exhaust of tau_2
+    #%%%%% Calculate Delta tau between exhaust of tau_3 and and exhaust of tau_2
     # '''       
     # '''
     
@@ -1295,7 +1330,7 @@ def residence_time_sup_exh(experimentno=3, deviceno=0, periodtime=120,
     # ns_meas = df_tau_e['std dtau 2e3e exh'].mean()
     # n = len(df_tau_e['std dtau 2e3e exh'])
                 
-    # # Because the evaluation of the residence times t0glob and t0 --> Will be considered differently
+    # # Because the evaluation of the residence times t0 and t0 --> Will be considered differently
     # #df_tau_e['index'] = df_tau_e['index'] + fdelay
 
     # df_tau_e['index'] = np.arange(0,len(df_tau_e) * diff, diff)
@@ -1359,10 +1394,176 @@ def residence_time_sup_exh(experimentno=3, deviceno=0, periodtime=120,
                     ("supply residence time")
     """
 
-    return [t0, tn, tau_e_u, df_tau_e, tau_s_u, df_tau_s]
+    return [database, experiment, aperture_sensor, t0, tn, 2*alpha_mean_u, 
+            tau_e_u, df_tau_e, 
+            tau_s_u, df_tau_s]
 
-    #%% Final result print
-    prYellow("Recirculation:  {} %".format(round((tau_s_u.n/tau_e_u.n)*100) )  )
+#%% Func: residence_Vflow_weighted
+# def colect_local_Vflows_Resitimes(experiment = "W_I_e0_Herdern"):
+#     experimentglo = CBO_ESHL(experiment)
+    
+#     dvdt = Summarise_vflows(experiment)
+    
+    
+    
+#     return vflow, resitime
+
+
+
+
+def residence_Vflow_weighted(vflow = pd.DataFrame([[30, 60], [5, 10]], 
+                                                  columns=['vol flow', 'std vol flow'], 
+                                                  dtype=('float64')), 
+                             resitime = pd.DataFrame([[64, 45], [5, 10]],
+                                                     columns=['rtime', 'std rtime'], 
+                                                     dtype=('float64'))
+                             ):
+    from uncertainties import unumpy
+    
+    try:
+        if len(vflow) == len(resitime):
+            resitime_u = unumpy.uarray(resitime['rtime'], resitime['std rtime'])
+            vflow_u = unumpy.uarray(vflow['vol flow'],vflow['std vol flow']) 
+            
+            resitime_u = sum(resitime_u*vflow_u)/sum(vflow_u)
+            
+            resitime = pd.DataFrame(columns=['rtime', 'std rtime'], 
+                                    dtype=('float64'))
+            resitime = pd.DataFrame([{'rtime': resitime_u.n, 'std rtime': resitime_u.s}],dtype=('float64'))
+        else:
+            raise ValueError 
+            pass
+    except ValueError:
+        string = prYellow('ValueError: The number volume flows and residence times has to be equal.')
+        return string
+    
+    return resitime
+
+def Summarise_vflows(experiment = "W_I_e0_Herdern"):
+    
+    experimentglo = CBO_ESHL(experiment)
+    dvdt = pd.DataFrame(columns=('experiment','volume_flow','volume_flow_std','level',
+                                 'vdot_sup','vdot_sup_std','vdot_exh','vdot_exh_std'))
+ 
+    try:
+        if 'eshl' in experimentglo.database:
+            try:
+                if experimentglo.experiment[2] == 'I':
+                    level = ['Kü_100', 'SZ01_100', 'SZ02_100', 'WZ_100']
+                    for count in range(len(level)):     
+                        dvdt = dvdt.append(experimentglo.volume_flow(level_eshl = level[count]), ignore_index=True)
+                    try:
+                        if experimentglo.experiment[4:6] == 'e0':
+                            pass
+                        else:
+                            raise ValueError
+                    except ValueError:
+                        strin1 = prYellow('Only those cases with balanced volume flow settings are yet covered by Summarise_vflows().')
+                        return strin1 
+                    
+                elif experimentglo.experiment[2] == 'H':
+                    level = ['Kü_20', 'SZ01_20', 'SZ02_20', 'WZ_20']
+                    for count in range(len(level)):     
+                        dvdt = dvdt.append(experimentglo.volume_flow(level_eshl = level[count]), ignore_index=True)
+                    try:
+                        if experimentglo.experiment[4:6] == 'e0':
+                            pass
+                        else:
+                            raise ValueError
+                    except ValueError:
+                        strin2 = prYellow('Only those cases with balanced volume flow settings are yet covered by Summarise_vflows().')
+                        return strin2
+                    pass
+                else:
+                    raise NameError
+                    pass
+            except NameError:
+                strin3 = prYellow('CBO_ESHL.experiment has the wrong syntax. The 3rd string element must be "I" for "intensiv ventilation" or "H" for "humidity protection".')
+                return strin3
+            pass
+        elif 'cbo' in experimentglo.database:
+            try:
+                if experimentglo.experiment[2] == 'I':
+                    level = ['K1_St5', 'K2_St5', 'SZ_St5']
+                    for count in range(len(level)):     
+                        dvdt = dvdt.append(experimentglo.volume_flow(level_cbo = level[count]), ignore_index=True)
+                    try:
+                        if experimentglo.experiment[4:6] == 'e0':
+                            pass
+                        else:
+                            raise ValueError
+                    except ValueError:
+                        string4 = prYellow('Only those cases with balanced volume flow settings are yet covered by Summarise_vflows().')
+                        return string4
+                elif experimentglo.experiment[2] == 'H':
+                    level = ['K1_St4', 'K2_St4', 'SZ_St4']
+                    for count in range(len(level)):     
+                        dvdt = dvdt.append(experimentglo.volume_flow(level_cbo = level[count]), ignore_index=True)
+                    try:
+                        if experimentglo.experiment[4:6] == 'e0':
+                            pass
+                        else:
+                            raise ValueError
+                    except ValueError:
+                        string5 = prYellow('ValueError: Only those cases with balanced volume flow settings are yet covered by Summarise_vflows().')
+                        return string5
+                    pass
+                else:
+                    raise NameError
+                    pass
+            except NameError:
+                string6 = prYellow('NameError: CBO_ESHL.experiment has the wrong syntax. The 3rd string element must be "I" for "intensiv ventilation" or "H" for "humidity protection".')
+                return string6
+            pass
+        else:
+            raise NameError
+            pass
+    except NameError:
+        string7 = prYellow('NameError: The current CBO_ESHL.database is not valid. Volumeflows can not be returned CBO_ESHL.volume_flow().')   
+        return string7
+
+    return dvdt
+
+def Summarise_resitimes(experiment = "W_I_e0_Herdern"):
+    
+    experimentglo = CBO_ESHL(experiment)
+        
+    time = pd.read_sql_query("SELECT * FROM testdb.timeframes;", con = engine)      
+    #standard syntax to fetch a table from Mysql; In this case a table with the 
+    # short-names of the measurements, all the start and end times, the DB-name 
+    # of the measurement and the required table-names of the DB/schema is loaded into a dataframe. 
+    
+    t = time["timeframes_id"][time.index[time['short_name'].isin([experiment])==True].tolist()[0]]-1
+    
+    table = time["tables"][t].split(",")                                        #Name of the ventilation device
+    
+    resitime = pd.DataFrame(index=range(len(table)),
+                        columns=('Sensor',
+                                 'av restime_3 in h','std av restime_3 in h',
+                                 'av restime_2 in s','std av restime_2 in s',
+                                 'av restime_1 in s','std av restime_1 in s'))
+    
+    for i in range(len(table)):
+        df = residence_time_sup_exh(experiment=experiment, aperture_sensor = table[i], 
+                                    periodtime=120, 
+                                    experimentname=False, plot=False, 
+                                    export_sublist=False, method='simpson',
+                                    filter_maxTrel=0.25, logging=False)
+        resitime.loc[i] = pd.Series({'Sensor':table[i], 
+                                 'av restime_3 in h': df[5].n,'std av restime_3 in h': df[5].s,
+                                 'av restime_2 in s': df[6].n,'std av restime_2 in s': df[6].s,
+                                 'av restime_1 in s': df[8].n,'std av restime_1 in s': df[8].s})
+
+    return resitime
+
+def check_for_nan(numbers = {'set_of_numbers': [1,2,3,4,5,np.nan,6,7,np.nan,8,9,10,np.nan]}):
+    import pandas as pd
+    import numpy as np
+    
+    df = pd.DataFrame(numbers,columns=['set_of_numbers'])
+
+    check_for_nan = df['set_of_numbers'].isnull().values.any()
+    print (check_for_nan)
 
 
 """
@@ -1374,3 +1575,28 @@ def residence_time_sup_exh(experimentno=3, deviceno=0, periodtime=120,
             interesting.
 
 """
+dvdt1 = Summarise_vflows(experiment = "W_I_e0_Herdern")
+
+resitime1 = Summarise_resitimes(experiment = "W_I_e0_Herdern")
+
+# restime = residence_Vflow_weighted(vflow = pd.DataFrame([[30, 60], [5, 10]], 
+#                                                   columns=['vol flow', 'std vol flow'], 
+#                                                   dtype=('float64')), 
+#                              resitime = pd.DataFrame([[64, 45], [5, 10]],
+#                                                      columns=['rtime', 'std rtime'], 
+#                                                      dtype=('float64'))
+#                              )
+
+# a1 = residence_time_sup_exh(experiment='S_H_e0_Herdern',aperture_sensor = "2l", periodtime=120,
+#                             experimentname=True, plot=True,
+#                             export_sublist=False, method='simpson',
+#                             filter_maxTrel=0.25, logging=False)
+# a2 = residence_time_sup_exh(experimentno=16, deviceno=1, periodtime=120, 
+#                            experimentname=True, plot=True, 
+#                            export_sublist=False, method='simpson',
+#                            filter_maxTrel=0.25, logging=False)
+# a3 = residence_time_sup_exh(experimentno=16, deviceno=2, periodtime=120, 
+#                            experimentname=True, plot=True, 
+#                            export_sublist=False, method='simpson',
+#                            filter_maxTrel=0.25, logging=False)
+
