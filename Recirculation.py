@@ -1498,91 +1498,130 @@ def check_for_nan(numbers = {'set_of_numbers': [1,2,3,4,5,np.nan,6,7,np.nan,8,9,
     check_for_nan = df['set_of_numbers'].isnull().values.any()
     print (check_for_nan)
     
-def summary_resitime_vflow(experiment = "W_I_e0_Herdern"):
+def summary_resitime_vflow(experiment = "W_I_e0_Herdern", reset=False):
     import pandas as pd
+    import pickle as pk
+    import os.path
     
     experimentglo = CBO_ESHL(experiment = experiment)
-    summary = [Summarise_vflows(experiment = experiment), 
-               Summarise_resitimes(experiment = experiment)
-              ]
     
     try:
-        if (experiment == summary[0]['experiment'].loc[:]).all():
-            volume_flow = summary[0]['volume_flow'].loc[0]
-            std_volume_flow = summary[0]['volume_flow_std'].loc[0]
-            av_resitime_3_h = summary[1]['av restime_3 in h'].loc[0]
-            std_av_resitime_3_h = summary[1]['std av restime_3 in h'].loc[0]
-            del summary[0]['experiment'], summary[0]['volume_flow'], summary[0]['volume_flow_std']
-            del summary[1]['av restime_3 in h'], summary[1]['std av restime_3 in h']
-            summary[0].set_index('level')
-            summary[1].set_index('Sensor')
-            summary.insert(0, experiment)
-            summary.insert(1, pd.DataFrame([{'volume_flow': volume_flow, 
-                                             'std_volume_flow': std_volume_flow}]))
-            summary.insert(2, pd.DataFrame([{'av_resitime_3_h': av_resitime_3_h, 
-                                             'std_av_resitime_3_h': std_av_resitime_3_h}]))
-            
+        if reset:
+            with open(experiment + "_summary", "wb") as file_summary:
+                summary = [Summarise_vflows(experiment = experiment), 
+                           Summarise_resitimes(experiment = experiment)]
+                pk.dump(summary, file_summary)
             pass
-        else: 
-            raise ValueError
-    except ValueError:
-        string2 = prYellow('ValueError: summary_resitime_vflow() received wrong data.')
-        return string2
-            
-      
-    try:
-        if 'eshl' in experimentglo.database:
-            relation = pd.DataFrame(data={'Level':['SZ01_100', 'SZ02_100', 'Kü_100', 'WZ_100','SZ01_20', 'SZ02_20', 'Kü_20', 'WZ_20'],
-                                          'Sensor': ['1l',     '2l',       '3l_kü', '3l_wz',   '1l',      '2l',     '3l_kü', '3l_wz']
-                                         })
-            pass
-        elif 'cbo' in experimentglo.database:
-            relation = pd.DataFrame(data={'Level':['K1_St4', 'K1_St4', 'K2_St4', 'SZ_St4', 'K1_St5', 'K1_St5', 'K2_St5', 'SZ_St5'],
-                                          'Sensor': ['1l',   '1l_sub', '2l',      '3l', '1l', '1l_sub','2l', '3l']
-                                         })
+        elif os.path.exists(experiment + "_summary"):
+            with open(experiment + "_summary", "rb") as file_summary:
+                summary = pk.load(file_summary)
             pass
         else:
-            raise NameError
+            with open(experiment + "_summary", "wb") as file_summary:
+                summary = [Summarise_vflows(experiment = experiment), 
+                           Summarise_resitimes(experiment = experiment)]
+                pk.dump(summary, file_summary)
+            string3 = 'No file "{}_summary" found. "summary" has been recreated and saved as "{}_summary".'.format(experiment, experiment) 
             pass
-    except NameError:
-        string1 = prYellow('NameError: The current CBO_ESHL.database is not valid. Volumeflows can not be returned CBO_ESHL.summary_resitime_vflow().')   
-        return string1
+    except IOError:
+        prYellow(string3)
+    finally:
+        file_summary.close()
     
-    relation = pd.MultiIndex.from_frame(relation)
-    summary[3] = summary[3].reindex(index=relation, level=0)
-    summary[4] = summary[4].reindex(index=relation, level=1)
-    summary.insert(5, pd.concat([summary[3], summary[4]], 
-                                join="outer", axis=1))
-    summary[5] = summary[5].dropna()   
-    # del summary[3], summary[4]
     
-    #%%% Local residence time dataframes
-    supplyt = summary[5].loc[:,['av restime_1 in s', 'std av restime_1 in s']]
-    supplyt = supplyt.reset_index()
-    del supplyt['Level'], supplyt['Sensor']
-    supplyt.rename(columns = {'av restime_1 in s':'rtime', 'std av restime_1 in s':'std rtime'}, inplace = True)
+     
+    try:
+        if os.path.exists(experiment + "_summary_final"):
+            with open(experiment + "_summary", "rb") as file_summary:
+                summary = pk.load(file_summary)
+            pass
+        else:
+            with open(experiment + "_summary_final", "wb") as file_summary:
+                try:
+                    if experiment == (summary[0]['experiment'].loc[:]).all():
+                        volume_flow = summary[0]['volume_flow'].loc[0]
+                        std_volume_flow = summary[0]['volume_flow_std'].loc[0]
+                        av_resitime_3_h = summary[1]['av restime_3 in h'].loc[0]
+                        std_av_resitime_3_h = summary[1]['std av restime_3 in h'].loc[0]
+                        del summary[0]['experiment'], summary[0]['volume_flow'], summary[0]['volume_flow_std']
+                        del summary[1]['av restime_3 in h'], summary[1]['std av restime_3 in h']
+                        summary[0] = summary[0].set_index('level')
+                        summary[1] = summary[1].set_index('Sensor')
+                        summary.insert(0, experiment)
+                        summary.insert(1, pd.DataFrame([{'volume_flow': volume_flow, 
+                                                         'std_volume_flow': std_volume_flow}]))
+                        summary.insert(2, pd.DataFrame([{'av restime_3 in h': av_resitime_3_h, 
+                                                         'std av restime_3 in h': std_av_resitime_3_h}]))
+                        pass
+                    else: 
+                        string1 = 'ValueError: summary_resitime_vflow() received wrong data.' 
+                        raise ValueError
+                except ValueError:
+                    prYellow(string1)
+            
+      
+                try:
+                    if 'eshl' in experimentglo.database:
+                        relation = pd.DataFrame(data={'Level':['SZ01_100', 'SZ02_100', 'Kü_100', 'WZ_100','SZ01_20', 'SZ02_20', 'Kü_20', 'WZ_20'],
+                                                      'Sensor': ['1l',     '2l',       '3l_kü', '3l_wz',   '1l',      '2l',     '3l_kü', '3l_wz']
+                                                     })
+                        pass
+                    elif 'cbo' in experimentglo.database:
+                        relation = pd.DataFrame(data={'Level':['K1_St4', 'K1_St4', 'K2_St4', 'SZ_St4', 'K1_St5', 'K1_St5', 'K2_St5', 'SZ_St5'],
+                                                      'Sensor': ['1l','1l_sub','2l','3l','1l','1l_sub','2l', '3l']
+                                                     })
+                        pass
+                    else:
+                        string2 = 'NameError: The current CBO_ESHL.database is not valid. Volumeflows can not be returned CBO_ESHL.summary_resitime_vflow().'
+                        raise NameError
+                        pass
+                except NameError:
+                    prYellow(string2)
     
-    exhaustt = summary[5].loc[:,['av restime_2 in s', 'std av restime_2 in s']]
-    exhaustt = exhaustt.reset_index()
-    del exhaustt['Level'], exhaustt['Sensor']
-    exhaustt.rename(columns = {'av restime_2 in s':'rtime', 'std av restime_2 in s':'std rtime'}, inplace = True)
-    
-    #%%% Local volume flow dataframes
-    supplyV = summary[5].loc[:,['vdot_sup', 'vdot_sup_std']]
-    supplyV = supplyV.reset_index()
-    del supplyV['Level'], supplyV['Sensor']
-    supplyV.rename(columns = {'vdot_sup':'vol flow', 'vdot_sup_std':'std vol flow'}, inplace = True)
-    
-    exhuastV = summary[5].loc[:,['vdot_exh', 'vdot_exh_std']]
-    exhuastV = exhuastV.reset_index()
-    del exhuastV['Level'], exhuastV['Sensor']
-    exhuastV.rename(columns = {'vdot_exh':'vol flow', 'vdot_exh_std':'std vol flow'}, inplace = True)
+                relation = pd.MultiIndex.from_frame(relation)
+                summary[3] = summary[3].reindex(index=relation, level=0)
+                summary[4] = summary[4].reindex(index=relation, level=1)
+                summary.insert(5, pd.concat([summary[3], summary[4]], 
+                                            join="outer", axis=1))
+                summary[5] = summary[5].dropna()   
+                # del summary[3], summary[4]
+                
+                #%%% Local residence time dataframes
+                supplyt = summary[5].loc[:,['av restime_1 in s', 'std av restime_1 in s']]
+                supplyt = supplyt.reset_index()
+                del supplyt['Level'], supplyt['Sensor']
+                supplyt.rename(columns = {'av restime_1 in s':'rtime', 'std av restime_1 in s':'std rtime'}, inplace = True)
+                
+                exhaustt = summary[5].loc[:,['av restime_2 in s', 'std av restime_2 in s']]
+                exhaustt = exhaustt.reset_index()
+                del exhaustt['Level'], exhaustt['Sensor']
+                exhaustt.rename(columns = {'av restime_2 in s':'rtime', 'std av restime_2 in s':'std rtime'}, inplace = True)
+                
+                #%%% Local volume flow dataframes
+                supplyV = summary[5].loc[:,['vdot_sup', 'vdot_sup_std']]
+                supplyV = supplyV.reset_index()
+                del supplyV['Level'], supplyV['Sensor']
+                supplyV.rename(columns = {'vdot_sup':'vol flow', 'vdot_sup_std':'std vol flow'}, inplace = True)
+                
+                exhuastV = summary[5].loc[:,['vdot_exh', 'vdot_exh_std']]
+                exhuastV = exhuastV.reset_index()
+                del exhuastV['Level'], exhuastV['Sensor']
+                exhuastV.rename(columns = {'vdot_exh':'vol flow', 'vdot_exh_std':'std vol flow'}, inplace = True)
+            
+                #%%% Calculating the weighted residence times for the whole system
+                summary.insert(6,residence_Vflow_weighted(supplyV, supplyt))
+                summary[6].rename(columns = {'rtime':'av t1 in s', 'std rtime':'std av t1 in s'}, inplace = True)
+                summary.insert(7,residence_Vflow_weighted(exhuastV, exhaustt))
+                summary[7].rename(columns = {'rtime':'av t2 in s', 'std rtime':'std av t2 in s'}, inplace = True)
 
-    #%%% Calculating the weighted residence times for the whole system
-    summary.insert(6,residence_Vflow_weighted(supplyV, supplyt))
-    summary[6].rename(columns = {'rtime':'av t1 in s', 'std rtime':'std av t1 in s'}, inplace = True)
-    summary.insert(7,residence_Vflow_weighted(exhuastV, exhaustt))
-    summary[7].rename(columns = {'rtime':'av t2 in s', 'std rtime':'std av t2 in s'}, inplace = True)
+                pk.dump(summary, file_summary)
+            
+            string4 = 'No file "{}_summary_final" found. "summary" has been recreated and saved as "{}_summary_final".'.format(experiment, experiment) 
+            pass
+    except IOError:
+        prYellow(string4)
+    finally:
+        file_summary.close()
     
     return  summary
     
@@ -1607,6 +1646,7 @@ summaryE = []
 for e in experiments:
     summary = summary_resitime_vflow(e)
     summaryE.append(summary)
+
 
 
 # S_H_e0_Herdern = [Summarise_vflows(experiment = "S_H_e0_Herdern"), 
