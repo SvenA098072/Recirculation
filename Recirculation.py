@@ -113,7 +113,7 @@ def residence_time_sup_exh(experiment='W_I_e0_ESHL', aperture_sensor = "2l", per
     # of the measurement and the required table-names of the DB/schema is loaded into a dataframe. 
     
     #%% Load relevant data
-    t = time["timeframes_id"][time.index[time['short_name'].isin([experiment])==True].tolist()[0]]-1 # to select the experiment (see Timeframes.xlsx)
+    t = time.index[time['short_name'].isin([experiment])==True].tolist()[0] # to select the experiment (see Timeframes.xlsx)
     
     start = str(time["Start"][time.index[time['short_name'].isin([experiment])==True].tolist()[0]] - dt.timedelta(minutes=20))
     end = str(time["End"][time.index[time['short_name'].isin([experiment])==True].tolist()[0]])
@@ -429,23 +429,24 @@ def residence_time_sup_exh(experiment='W_I_e0_ESHL', aperture_sensor = "2l", per
         
     #%%%% Exporrt a file with all the supply curves sorted in a matrix for an excel diagram    
     df_sup_list = []
-    # dummy_df = pd.DataFrame(columns=['datetime', 'CO2_ppm', 'num'])
-    # for i in range(1, int(df_sup3['num'].max()+1)):
+    dummy_df = pd.DataFrame(columns=['datetime', 'CO2_ppm', 'num'])
+    for i in range(1, int(df_sup3['num'].max()+1)):
 
-    #     try:
-    #         if export_sublist and len(df_sup3.loc[df_sup3["num"]==i]) > 3:
-    #             dummy_df = dummy_df.append(df_sup3.loc[df_sup3["num"]==(i)])
-    #             dummy_df = dummy_df.rename(columns = {'CO2_ppm':'CO2_ppm_{}'.format(i)})
+        try:
+            if export_sublist and len(df_sup3.loc[df_sup3["num"]==i]) > 3:
+                dummy_df = dummy_df.append(df_sup3.loc[df_sup3["num"]==(i)])
+                dummy_df = dummy_df.rename(columns = {'CO2_ppm':'CO2_ppm_{}'.format(i)})
             
             
-    #     except KeyError:
-    #         pass
-    #         # print("ignore the key error")
+        except KeyError:
+            pass
+            # print("ignore the key error")
 
-    #     df_sup_list.append(df_sup3.loc[df_sup3["num"]==i])
+        df_sup_list.append(df_sup3.loc[df_sup3["num"]==i])
     
-    # del dummy_df["num"]
-    # dummy_df.to_csv(r'D:\Users\sauerswa\wichtige Ordner\sauerswa\Codes\Python\Recirculation\export\df_sup_{}_{}.csv'.format(database, aperture_sensor), index=True) 
+    del dummy_df["num"]
+    if logging:
+        dummy_df.to_csv(r'D:\Users\sauerswa\wichtige Ordner\sauerswa\Codes\Python\Recirculation\export\df_sup_{}_{}.csv'.format(database, aperture_sensor), index=True) 
     
     #%%% Supply tau 
     # This method can be replicated in excel for crossreference
@@ -479,6 +480,7 @@ def residence_time_sup_exh(experiment='W_I_e0_ESHL', aperture_sensor = "2l", per
     accuracy6 = 0.03 # Citavi Title: Testo AG
     
     df_tau_sup = []
+    s_rel_start = 1-df_sup_list[0].reset_index()['CO2_ppm'].loc[0]/mean_delta_0_room['mean_delta']
     s_cyc = 0
     for idf in df_sup_list:
         if len(idf) > 3:
@@ -603,9 +605,9 @@ def residence_time_sup_exh(experiment='W_I_e0_ESHL', aperture_sensor = "2l", per
                 s_rest = np.sqrt(pow(s_lambda,2) + pow(s_phi_e,2))
                 sa_rest = s_rest * a_rest
                 s_area = np.sqrt(pow(sa_num,2) + pow(sa_tm,2) + pow(sa_rest,2))/a_tot
-                s_total = np.sqrt(pow(s_area,2) + pow(0.05,2))
+                s_total = np.sqrt(pow(s_area,2) + pow(s_rel_start,2))
                 
-                a.loc[:, "s_total"] = s_total
+                a.loc[:, "s_total"] = s_total*tau
                 
                 #%%%%% Calculate weighting factor 
                 sup_exh_df = sup_exh_df.set_index('datetime')
@@ -780,24 +782,25 @@ def residence_time_sup_exh(experiment='W_I_e0_ESHL', aperture_sensor = "2l", per
       
     #%%%% Exporrt a file with all the exhaust curves sorted in a matrix for an excel diagram    
     df_exh_list = []
-    # del dummy_df
-    # dummy_df = pd.DataFrame(columns=['datetime', 'CO2_ppm', 'num'])
-    # for i in range(1, int(df_exh3.num.max()+1)):
+    del dummy_df
+    dummy_df = pd.DataFrame(columns=['datetime', 'CO2_ppm', 'num'])
+    for i in range(1, int(df_exh3.num.max()+1)):
 
-    #     try:
-    #         if export_sublist and len(df_sup3.loc[df_exh3["num"]==i]) > 3:
-    #             dummy_df = dummy_df.append(df_exh3.loc[df_exh3["num"]==(i)])
-    #             dummy_df = dummy_df.rename(columns = {'CO2_ppm':'CO2_ppm_{}'.format(i)})
+        try:
+            if export_sublist and len(df_sup3.loc[df_exh3["num"]==i]) > 3:
+                dummy_df = dummy_df.append(df_exh3.loc[df_exh3["num"]==(i)])
+                dummy_df = dummy_df.rename(columns = {'CO2_ppm':'CO2_ppm_{}'.format(i)})
             
             
-    #     except KeyError:
-    #         pass
-    #         # print("ignore the key error")
+        except KeyError:
+            pass
+            # print("ignore the key error")
 
-    #     df_exh_list.append(df_exh3.loc[df_exh3["num"]==i])
+        df_exh_list.append(df_exh3.loc[df_exh3["num"]==i])
     
-    # del dummy_df["num"]
-    # dummy_df.to_csv(r'D:\Users\sauerswa\wichtige Ordner\sauerswa\Codes\Python\Recirculation\export\df_exh_{}_{}.csv'.format(database, aperture_sensor), index=True) 
+    del dummy_df["num"]
+    if logging:
+        dummy_df.to_csv(r'D:\Users\sauerswa\wichtige Ordner\sauerswa\Codes\Python\Recirculation\export\df_exh_{}_{}.csv'.format(database, aperture_sensor), index=True) 
         
         
     #%%% Exhaust tau
@@ -809,77 +812,6 @@ def residence_time_sup_exh(experiment='W_I_e0_ESHL', aperture_sensor = "2l", per
     e_cyc = 0
     for e in df_exh_list:
         if len(e) > 3:
-            
-            # %%%%% original code from DRK
-            # b = e.reset_index(drop = True)
-            
-            
-            # b['CO2_ppm_reg'] = b.eval(res.loc[0, "equation"])    
-            # b = b.rename(columns = {'CO2_ppm':'CO2_ppm_original', 'CO2_ppm_reg': 'CO2_ppm'})
-            # b = b.drop_duplicates(subset=['datetime'])
-            # b = b.loc[:, ["datetime", "CO2_ppm_original", "CO2_ppm"]]
-            # b = b.dropna()
-            
-            
-            
-            # b["log"] = np.log(b["CO2_ppm"])
-            
-            # diff = (b["datetime"][1] - b["datetime"][0]).seconds
-            # b["s_meas"] =  np.sqrt(np.square((b["CO2_ppm"] * accuracy2)) 
-            #                        + np.square(accuracy1) + np.square((b["CO2_ppm"] * accuracy4)) 
-            #                        + np.square(accuracy3) + np.square((b["CO2_ppm"] * accuracy6)) 
-            #                        + np.square(accuracy5)+ np.square(res.loc[0, "rse"]))
-            # ns_meas = b['s_meas'].mean()
-            # n = len(b['s_meas'])
-            
-            
-            # b["runtime"] = np.arange(0,len(b) * diff, diff)
-            
-            # b["t-te"] = b["runtime"] - b["runtime"][len(b)-1]
-            
-            # b["lnte/t"] = b["log"] - b["log"][len(b)-1]
-            
-            # b["slope"] = b["lnte/t"] / b["t-te"]
-            # slope = b["slope"].mean()
-            # #############
-            # x = b["runtime"].values
-            # y = b["log"].values
-            # from scipy.stats import linregress
-            # slope = linregress(x,y)[0]
-            # ############
-            # b.loc[[len(b)-1], "slope"] = abs(slope)
-            
-            # sumconz = b["CO2_ppm"].iloc[1:-1].sum()
-            
-            # tail = b["CO2_ppm"][len(b)-1]/abs(slope)
-            # area1 = (diff * (b["CO2_ppm"][0]/2 + sumconz +b["CO2_ppm"][len(b)-1]/2))
-            # from numpy import trapz
-            # global area2
-            # area2 = trapz(b["CO2_ppm"].values, dx=diff)                             # proof that both methods have same answer
-            
-           
-            
-            # a_rest = b["CO2_ppm"].iloc[-1]/abs(slope)
-            # a_tot = area2 + a_rest
-            
-            # if iso:
-            #     sa_num = ns_meas * (diff) * ((n - 1)/np.sqrt(n)) # Taken from DIN ISO 16000-8:2008-12, Equation D2 units are cm3.m-3.sec
-            # else:
-            #     sa_num = (diff) * ns_meas * np.sqrt((2*n-1)/2*n) # Actually sa_num should be calculated this way
-            
-            # s_lambda = b["slope"][:-1].std()/abs(b["slope"][:-1].mean())
-            # s_phi_e = b["slope"][:-1].std()/abs(b["slope"].iloc[-1])
-    
-            # s_rest = np.sqrt(pow(s_lambda,2) + pow(s_phi_e,2))
-            # sa_rest = s_rest * a_rest
-            # s_area = np.sqrt(pow(sa_num,2) + pow(sa_rest,2))/a_tot
-            # s_total = np.sqrt(pow(s_area,2) + pow(0.05,2))
-            
-            
-            # tau2 = (area2 + tail)/b["CO2_ppm"][len(b)-1]
-            # b["tau_sec"] = tau2
-            # b.loc[:, "s_total"] = s_total
-            # df_tau_exh.append(b)
             
             # %%%%% Structure columns
             
@@ -1110,9 +1042,10 @@ def residence_time_sup_exh(experiment='W_I_e0_ESHL', aperture_sensor = "2l", per
                 s_rest = np.sqrt(pow(s_lambda,2) + pow(s_phi_e,2))
                 sa_rest = s_rest * a_rest
                 s_area = np.sqrt(pow(sa_num,2) + pow(sa_tm,2) + pow(sa_rest,2))/a_tot
+                # ATTENTION: s_total is a relative uncertainty!
                 s_total = np.sqrt(pow(s_area,2) + pow(dC3e.s/dC3e.n,2))
                 
-                b.loc[:, "s_total"] = s_total
+                b.loc[:, "s_total"] = s_total*tau2
                 
                 #%%%%% Calculate weighting factor 
                 sup_exh_df = sup_exh_df.set_index('datetime')
@@ -1434,14 +1367,14 @@ def residence_Vflow_weighted(vflow = pd.DataFrame([[30, 60], [5, 10]],
             raise ValueError 
             pass
     except ValueError:
-        string = prYellow('ValueError: The number volume flows and residence times has to be equal.')
+        string = prYellow('ValueError: The number of passed volume flows and residence times has to be equal.')
         return string
     
     return resitime
 
 def Summarise_vflows(experiment = "W_I_e0_Herdern"):
     
-    experimentglo = CBO_ESHL(experiment)
+    experimentglo = CBO_ESHL(experiment = experiment)
     dvdt = pd.DataFrame(columns=('experiment','volume_flow','volume_flow_std','level',
                                  'vdot_sup','vdot_sup_std','vdot_exh','vdot_exh_std'))
  
@@ -1526,7 +1459,7 @@ def Summarise_vflows(experiment = "W_I_e0_Herdern"):
 
 def Summarise_resitimes(experiment = "W_I_e0_Herdern"):
     
-    experimentglo = CBO_ESHL(experiment)
+    experimentglo = CBO_ESHL(experiment = experiment)
         
     time = pd.read_sql_query("SELECT * FROM testdb.timeframes;", con = engine)      
     #standard syntax to fetch a table from Mysql; In this case a table with the 
@@ -1546,7 +1479,7 @@ def Summarise_resitimes(experiment = "W_I_e0_Herdern"):
     for i in range(len(table)):
         df = residence_time_sup_exh(experiment=experiment, aperture_sensor = table[i], 
                                     periodtime=120, 
-                                    experimentname=False, plot=False, 
+                                    experimentname=True, plot=False, 
                                     export_sublist=False, method='simpson',
                                     filter_maxTrel=0.25, logging=False)
         resitime.loc[i] = pd.Series({'Sensor':table[i], 
@@ -1564,8 +1497,95 @@ def check_for_nan(numbers = {'set_of_numbers': [1,2,3,4,5,np.nan,6,7,np.nan,8,9,
 
     check_for_nan = df['set_of_numbers'].isnull().values.any()
     print (check_for_nan)
+    
+def summary_resitime_vflow(experiment = "W_I_e0_Herdern"):
+    import pandas as pd
+    
+    experimentglo = CBO_ESHL(experiment = experiment)
+    summary = [Summarise_vflows(experiment = experiment), 
+               Summarise_resitimes(experiment = experiment)
+              ]
+    
+    try:
+        if (experiment == summary[0]['experiment'].loc[:]).all():
+            volume_flow = summary[0]['volume_flow'].loc[0]
+            std_volume_flow = summary[0]['volume_flow_std'].loc[0]
+            av_resitime_3_h = summary[1]['av restime_3 in h'].loc[0]
+            std_av_resitime_3_h = summary[1]['std av restime_3 in h'].loc[0]
+            del summary[0]['experiment'], summary[0]['volume_flow'], summary[0]['volume_flow_std']
+            del summary[1]['av restime_3 in h'], summary[1]['std av restime_3 in h']
+            summary[0].set_index('level')
+            summary[1].set_index('Sensor')
+            summary.insert(0, experiment)
+            summary.insert(1, pd.DataFrame([{'volume_flow': volume_flow, 
+                                             'std_volume_flow': std_volume_flow}]))
+            summary.insert(2, pd.DataFrame([{'av_resitime_3_h': av_resitime_3_h, 
+                                             'std_av_resitime_3_h': std_av_resitime_3_h}]))
+            
+            pass
+        else: 
+            raise ValueError
+    except ValueError:
+        string2 = prYellow('ValueError: summary_resitime_vflow() received wrong data.')
+        return string2
+            
+      
+    try:
+        if 'eshl' in experimentglo.database:
+            relation = pd.DataFrame(data={'Level':['SZ01_100', 'SZ02_100', 'Kü_100', 'WZ_100','SZ01_20', 'SZ02_20', 'Kü_20', 'WZ_20'],
+                                          'Sensor': ['1l',     '2l',       '3l_kü', '3l_wz',   '1l',      '2l',     '3l_kü', '3l_wz']
+                                         })
+            pass
+        elif 'cbo' in experimentglo.database:
+            relation = pd.DataFrame(data={'Level':['K1_St4', 'K1_St4', 'K2_St4', 'SZ_St4', 'K1_St5', 'K1_St5', 'K2_St5', 'SZ_St5'],
+                                          'Sensor': ['1l',   '1l_sub', '2l',      '3l', '1l', '1l_sub','2l', '3l']
+                                         })
+            pass
+        else:
+            raise NameError
+            pass
+    except NameError:
+        string1 = prYellow('NameError: The current CBO_ESHL.database is not valid. Volumeflows can not be returned CBO_ESHL.summary_resitime_vflow().')   
+        return string1
+    
+    relation = pd.MultiIndex.from_frame(relation)
+    summary[3] = summary[3].reindex(index=relation, level=0)
+    summary[4] = summary[4].reindex(index=relation, level=1)
+    summary.insert(5, pd.concat([summary[3], summary[4]], 
+                                join="outer", axis=1))
+    summary[5] = summary[5].dropna()   
+    # del summary[3], summary[4]
+    
+    #%%% Local residence time dataframes
+    supplyt = summary[5].loc[:,['av restime_1 in s', 'std av restime_1 in s']]
+    supplyt = supplyt.reset_index()
+    del supplyt['Level'], supplyt['Sensor']
+    supplyt.rename(columns = {'av restime_1 in s':'rtime', 'std av restime_1 in s':'std rtime'}, inplace = True)
+    
+    exhaustt = summary[5].loc[:,['av restime_2 in s', 'std av restime_2 in s']]
+    exhaustt = exhaustt.reset_index()
+    del exhaustt['Level'], exhaustt['Sensor']
+    exhaustt.rename(columns = {'av restime_2 in s':'rtime', 'std av restime_2 in s':'std rtime'}, inplace = True)
+    
+    #%%% Local volume flow dataframes
+    supplyV = summary[5].loc[:,['vdot_sup', 'vdot_sup_std']]
+    supplyV = supplyV.reset_index()
+    del supplyV['Level'], supplyV['Sensor']
+    supplyV.rename(columns = {'vdot_sup':'vol flow', 'vdot_sup_std':'std vol flow'}, inplace = True)
+    
+    exhuastV = summary[5].loc[:,['vdot_exh', 'vdot_exh_std']]
+    exhuastV = exhuastV.reset_index()
+    del exhuastV['Level'], exhuastV['Sensor']
+    exhuastV.rename(columns = {'vdot_exh':'vol flow', 'vdot_exh_std':'std vol flow'}, inplace = True)
 
-
+    #%%% Calculating the weighted residence times for the whole system
+    summary.insert(6,residence_Vflow_weighted(supplyV, supplyt))
+    summary[6].rename(columns = {'rtime':'av t1 in s', 'std rtime':'std av t1 in s'}, inplace = True)
+    summary.insert(7,residence_Vflow_weighted(exhuastV, exhaustt))
+    summary[7].rename(columns = {'rtime':'av t2 in s', 'std rtime':'std av t2 in s'}, inplace = True)
+    
+    return  summary
+    
 """
     Tasks to be done:
         1.) Include uncertainty evaluation for tau_e and tau_s to be returned 
@@ -1575,26 +1595,76 @@ def check_for_nan(numbers = {'set_of_numbers': [1,2,3,4,5,np.nan,6,7,np.nan,8,9,
             interesting.
 
 """
-dvdt1 = Summarise_vflows(experiment = "W_I_e0_Herdern")
 
-resitime1 = Summarise_resitimes(experiment = "W_I_e0_Herdern")
+
+
+experiments = ["S_H_e0_Herdern", "W_I_e0_Herdern","W_H_e0_Herdern","S_H_e0_ESHL","S_I_e0_ESHL"]
+
+# summary = summary_resitime_vflow(experiment = "W_I_e0_Herdern")
+
+summaryE = []
+
+for e in experiments:
+    summary = summary_resitime_vflow(e)
+    summaryE.append(summary)
+
+
+# S_H_e0_Herdern = [Summarise_vflows(experiment = "S_H_e0_Herdern"), 
+#                   Summarise_resitimes(experiment = "S_H_e0_Herdern")
+#                   ]
+
+# W_I_e0_Herdern = [Summarise_vflows(experiment = "W_I_e0_Herdern"), 
+#                   Summarise_resitimes(experiment = "W_I_e0_Herdern")
+#                   ]
+
+# Fehlerhaft
+# S_I_e0_Herdern = [Summarise_vflows(experiment = "S_I_e0_Herdern"), 
+#                   Summarise_resitimes(experiment = "S_I_e0_Herdern")
+#                   ]
+
+# W_H_e0_Herdern = [Summarise_vflows(experiment = "W_H_e0_Herdern"), 
+#                   Summarise_resitimes(experiment = "W_H_e0_Herdern")
+#                   ]
+
+# S_H_e0_ESHL = [Summarise_vflows(experiment = "S_H_e0_ESHL"), 
+#                   Summarise_resitimes(experiment = "S_H_e0_ESHL")
+#                   ]
+# S_I_e0_ESHL = [Summarise_vflows(experiment = "S_I_e0_ESHL"), 
+#                   Summarise_resitimes(experiment = "S_I_e0_ESHL")
+#                   ]
+
+# Fehlerhaft
+# W_H_e0_ESHL = [Summarise_vflows(experiment = "W_H_e0_ESHL"), 
+#                   Summarise_resitimes(experiment = "W_H_e0_ESHL")
+#                   ]
+
+# Fehlerhaft
+# W_I_e0_ESHL = [Summarise_vflows(experiment = "W_I_e0_ESHL"), 
+#                   Summarise_resitimes(experiment = "W_I_e0_ESHL")
+#                   ]
+
+
+
+# dvdt1 = Summarise_vflows(experiment = "W_I_e0_Herdern")
+
+# resitime1 = Summarise_resitimes(experiment = "W_I_e0_Herdern")
 
 # restime = residence_Vflow_weighted(vflow = pd.DataFrame([[30, 60], [5, 10]], 
 #                                                   columns=['vol flow', 'std vol flow'], 
 #                                                   dtype=('float64')), 
-#                              resitime = pd.DataFrame([[64, 45], [5, 10]],
-#                                                      columns=['rtime', 'std rtime'], 
-#                                                      dtype=('float64'))
-#                              )
+#                               resitime = pd.DataFrame([[64, 45], [5, 10]],
+#                                                       columns=['rtime', 'std rtime'], 
+#                                                       dtype=('float64'))
+#                               )
 
 # a1 = residence_time_sup_exh(experiment='S_H_e0_Herdern',aperture_sensor = "2l", periodtime=120,
 #                             experimentname=True, plot=True,
 #                             export_sublist=False, method='simpson',
 #                             filter_maxTrel=0.25, logging=False)
-# a2 = residence_time_sup_exh(experimentno=16, deviceno=1, periodtime=120, 
-#                            experimentname=True, plot=True, 
-#                            export_sublist=False, method='simpson',
-#                            filter_maxTrel=0.25, logging=False)
+# a2 = residence_time_sup_exh(experiment='W_I_e0_Herdern',aperture_sensor = "2l", periodtime=120,
+#                             experimentname=True, plot=True,
+#                             export_sublist=False, method='simpson',
+#                             filter_maxTrel=0.25, logging=False)
 # a3 = residence_time_sup_exh(experimentno=16, deviceno=2, periodtime=120, 
 #                            experimentname=True, plot=True, 
 #                            export_sublist=False, method='simpson',
