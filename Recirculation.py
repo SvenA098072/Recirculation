@@ -1532,7 +1532,7 @@ def summary_resitime_vflow(experiment = "W_I_e0_Herdern", reset=False):
      
     try:
         if os.path.exists(experiment + "_summary_final"):
-            with open(experiment + "_summary", "rb") as file_summary:
+            with open(experiment + "_summary_final", "rb") as file_summary:
                 summary = pk.load(file_summary)
             pass
         else:
