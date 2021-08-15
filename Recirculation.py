@@ -77,7 +77,8 @@ def residence_time_sup_exh(experiment='W_I_e0_ESHL', aperture_sensor = "2l", per
     # import sys  
     # import sys  
     # sys.path.append("C:/Users/Devineni/OneDrive - bwedu/4_Recirculation/python_files/")  
-    from Outdoor_CO2 import outdoor # This function calculates the outdoor CO2 data
+    # from Outdoor_CO2 import outdoor # This function calculates the outdoor CO2 data
+    experimentglo = CBO_ESHL(experiment = experiment, aperture_sensor = aperture_sensor)
     global a, b, df_tau_sup, df_tau_exh
     #%% Control plot properties"
     """This syntax controls the plot properties(default plot font, shape, etc), 
@@ -138,13 +139,18 @@ def residence_time_sup_exh(experiment='W_I_e0_ESHL', aperture_sensor = "2l", per
     else:
         pass
     
-    database = time["database"][time.index[time['short_name'].isin([experiment])==True].tolist()[0]]    # Selects the name of the database as a string 
+    # database = time["database"][time.index[time['short_name'].isin([experiment])==True].tolist()[0]]    # Selects the name of the database as a string
+    database = experimentglo.database
     
     #%%% Load background data
-       
-    background, dummy = outdoor(str(t0), str(end), plot = False)                    # Syntax to call the background concentration function, "dummy" is only necessary since the function "outdoor" returns a tuple of a dataframe and a string.
-    background = background["CO2_ppm"].mean()                                       # Future: implement cyclewise background concentration; Till now it takes the mean outdoor concentration of the whole experiment.
-
+        
+    
+        
+    #background, dummy = outdoor(str(t0), str(end), plot = False)                    # Syntax to call the background concentration function, "dummy" is only necessary since the function "outdoor" returns a tuple of a dataframe and a string.
+    # background = background["CO2_ppm"].mean() 
+    background = experimentglo.aussen()['meanCO2']                                  # Future: implement cyclewise background concentration; Till now it takes the mean outdoor concentration of the whole experiment.
+    background_std = experimentglo.aussen()['sgm_CO2'] 
+    
     #%%% Load data of the experiment and the selected sensor
     
     df = pd.read_sql_query("SELECT * FROM {}.{} WHERE datetime BETWEEN '{}' AND\
@@ -214,8 +220,6 @@ def residence_time_sup_exh(experiment='W_I_e0_ESHL', aperture_sensor = "2l", per
         pass
     
     #%%% Load data for the occupied space V3
-    
-    experimentglo = CBO_ESHL(experiment = dum[0][1], aperture_sensor = aperture_sensor)
     
     alpha_mean, df_alpha, df_indoor = experimentglo.mean_curve()
     alpha_mean_u = ufloat(alpha_mean[0], alpha_mean[1])
@@ -421,7 +425,7 @@ def residence_time_sup_exh(experiment='W_I_e0_ESHL', aperture_sensor = "2l", per
             if (not pd.isnull(j["CO2_ppm"])) and (np.isnan(df_sup3["CO2_ppm"][i+1])):
                 df_sup3.loc[i,"num"] = n
                 n = n+1
-            elif (not pd.isnull(j["CO2_ppm"])):
+            elif not pd.isnull(j["CO2_ppm"]):
                 df_sup3.loc[i,"num"] = n
         except KeyError:
             pass
@@ -464,7 +468,8 @@ def residence_time_sup_exh(experiment='W_I_e0_ESHL', aperture_sensor = "2l", per
     else:
         print("Please select a correct database")
     
-    
+    # self.cdf1 = pd.read_sql_query("SELECT * FROM {}.{} WHERE datetime BETWEEN '{}' AND '{}'".format(self.database, self.table, self.t0, self.tn), con = self.engine) 
+    #         self.cdf2 = self.cdf1.loc[:,["datetime", "CO2_ppm"]]
     reg_result = pd.read_sql_table("reg_result", con = engine1).drop("index", axis = 1)
     '''Calibration data for the particular sensor alone is filtered '''
     global res
@@ -506,7 +511,8 @@ def residence_time_sup_exh(experiment='W_I_e0_ESHL', aperture_sensor = "2l", per
                 a["s_meas"] =  np.sqrt(np.square((a["CO2_ppm"] * accuracy2)) 
                                        + np.square(accuracy1) + np.square((a["CO2_ppm"] * accuracy4)) 
                                        + np.square(accuracy3) + np.square((a["CO2_ppm"] * accuracy6)) 
-                                       + np.square(accuracy5)+ np.square(res.loc[0, "rse"]))
+                                       + np.square(accuracy5)+ np.square(res.loc[0, "rse"])
+                                       + np.square(background_std))
                 ns_meas = a['s_meas'].mean()
                 n = len(a['s_meas'])
                 
@@ -1331,19 +1337,7 @@ def residence_time_sup_exh(experiment='W_I_e0_ESHL', aperture_sensor = "2l", per
             tau_e_u, df_tau_e, 
             tau_s_u, df_tau_s]
 
-#%% Func: residence_Vflow_weighted
-# def colect_local_Vflows_Resitimes(experiment = "W_I_e0_Herdern"):
-#     experimentglo = CBO_ESHL(experiment)
-    
-#     dvdt = Summarise_vflows(experiment)
-    
-    
-    
-#     return vflow, resitime
-
-
-
-
+#%% residence_Vflow_weighted
 def residence_Vflow_weighted(vflow = pd.DataFrame([[30, 60], [5, 10]], 
                                                   columns=['vol flow', 'std vol flow'], 
                                                   dtype=('float64')), 
@@ -1364,14 +1358,15 @@ def residence_Vflow_weighted(vflow = pd.DataFrame([[30, 60], [5, 10]],
                                     dtype=('float64'))
             resitime = pd.DataFrame([{'rtime': resitime_u.n, 'std rtime': resitime_u.s}],dtype=('float64'))
         else:
+            string = 'ValueError: The number of passed volume flows and residence times has to be equal.'
             raise ValueError 
             pass
     except ValueError:
-        string = prYellow('ValueError: The number of passed volume flows and residence times has to be equal.')
-        return string
+        prYellow(string)
     
     return resitime
 
+#%% Summarise_vflows
 def Summarise_vflows(experiment = "W_I_e0_Herdern"):
     
     experimentglo = CBO_ESHL(experiment = experiment)
@@ -1389,10 +1384,11 @@ def Summarise_vflows(experiment = "W_I_e0_Herdern"):
                         if experimentglo.experiment[4:6] == 'e0':
                             pass
                         else:
+                            string1 = 'Only those cases with balanced volume flow settings are yet covered by Summarise_vflows().'
                             raise ValueError
                     except ValueError:
-                        strin1 = prYellow('Only those cases with balanced volume flow settings are yet covered by Summarise_vflows().')
-                        return strin1 
+                        prYellow(string1)
+ 
                     
                 elif experimentglo.experiment[2] == 'H':
                     level = ['Kü_20', 'SZ01_20', 'SZ02_20', 'WZ_20']
@@ -1402,17 +1398,17 @@ def Summarise_vflows(experiment = "W_I_e0_Herdern"):
                         if experimentglo.experiment[4:6] == 'e0':
                             pass
                         else:
+                            string2 = 'Only those cases with balanced volume flow settings are yet covered by Summarise_vflows().'
                             raise ValueError
                     except ValueError:
-                        strin2 = prYellow('Only those cases with balanced volume flow settings are yet covered by Summarise_vflows().')
-                        return strin2
+                        prYellow(string2)
                     pass
                 else:
+                    string3 = 'CBO_ESHL.experiment has the wrong syntax. The 3rd string element must be "I" for "intensiv ventilation" or "H" for "humidity protection".'
                     raise NameError
                     pass
             except NameError:
-                strin3 = prYellow('CBO_ESHL.experiment has the wrong syntax. The 3rd string element must be "I" for "intensiv ventilation" or "H" for "humidity protection".')
-                return strin3
+                prYellow(string3)
             pass
         elif 'cbo' in experimentglo.database:
             try:
@@ -1424,10 +1420,10 @@ def Summarise_vflows(experiment = "W_I_e0_Herdern"):
                         if experimentglo.experiment[4:6] == 'e0':
                             pass
                         else:
+                            string4 = 'Only those cases with balanced volume flow settings are yet covered by Summarise_vflows().'
                             raise ValueError
                     except ValueError:
-                        string4 = prYellow('Only those cases with balanced volume flow settings are yet covered by Summarise_vflows().')
-                        return string4
+                        prYellow(string4)
                 elif experimentglo.experiment[2] == 'H':
                     level = ['K1_St4', 'K2_St4', 'SZ_St4']
                     for count in range(len(level)):     
@@ -1436,27 +1432,28 @@ def Summarise_vflows(experiment = "W_I_e0_Herdern"):
                         if experimentglo.experiment[4:6] == 'e0':
                             pass
                         else:
+                            string5 = 'ValueError: Only those cases with balanced volume flow settings are yet covered by Summarise_vflows().'
                             raise ValueError
                     except ValueError:
-                        string5 = prYellow('ValueError: Only those cases with balanced volume flow settings are yet covered by Summarise_vflows().')
-                        return string5
+                        prYellow(string5)
                     pass
                 else:
+                    string6 = 'NameError: CBO_ESHL.experiment has the wrong syntax. The 3rd string element must be "I" for "intensiv ventilation" or "H" for "humidity protection".'
                     raise NameError
                     pass
             except NameError:
-                string6 = prYellow('NameError: CBO_ESHL.experiment has the wrong syntax. The 3rd string element must be "I" for "intensiv ventilation" or "H" for "humidity protection".')
-                return string6
+                prYellow(string6)
             pass
         else:
+            string7 = 'NameError: The current CBO_ESHL.database is not valid. Volumeflows can not be returned CBO_ESHL.volume_flow().'
             raise NameError
             pass
     except NameError:
-        string7 = prYellow('NameError: The current CBO_ESHL.database is not valid. Volumeflows can not be returned CBO_ESHL.volume_flow().')   
-        return string7
+        prYellow(string7)
 
     return dvdt
 
+#%% Summarise_resitimes
 def Summarise_resitimes(experiment = "W_I_e0_Herdern"):
     
     experimentglo = CBO_ESHL(experiment = experiment)
@@ -1489,6 +1486,7 @@ def Summarise_resitimes(experiment = "W_I_e0_Herdern"):
 
     return resitime
 
+#%% check_for_nan
 def check_for_nan(numbers = {'set_of_numbers': [1,2,3,4,5,np.nan,6,7,np.nan,8,9,10,np.nan]}):
     import pandas as pd
     import numpy as np
@@ -1497,7 +1495,8 @@ def check_for_nan(numbers = {'set_of_numbers': [1,2,3,4,5,np.nan,6,7,np.nan,8,9,
 
     check_for_nan = df['set_of_numbers'].isnull().values.any()
     print (check_for_nan)
-    
+
+#%% summary_resitime_vflow    
 def summary_resitime_vflow(experiment = "W_I_e0_Herdern", reset=False):
     import pandas as pd
     import pickle as pk
@@ -1548,9 +1547,10 @@ def summary_resitime_vflow(experiment = "W_I_e0_Herdern", reset=False):
                         summary[0] = summary[0].set_index('level')
                         summary[1] = summary[1].set_index('Sensor')
                         summary.insert(0, experiment)
-                        summary.insert(1, pd.DataFrame([{'volume_flow': volume_flow, 
+                        summary.insert(1, experimentglo.volume())
+                        summary.insert(2, pd.DataFrame([{'volume_flow': volume_flow, 
                                                          'std_volume_flow': std_volume_flow}]))
-                        summary.insert(2, pd.DataFrame([{'av restime_3 in h': av_resitime_3_h, 
+                        summary.insert(3, pd.DataFrame([{'av restime_3 in h': av_resitime_3_h, 
                                                          'std av restime_3 in h': std_av_resitime_3_h}]))
                         pass
                     else: 
@@ -1579,41 +1579,89 @@ def summary_resitime_vflow(experiment = "W_I_e0_Herdern", reset=False):
                     prYellow(string2)
     
                 relation = pd.MultiIndex.from_frame(relation)
-                summary[3] = summary[3].reindex(index=relation, level=0)
-                summary[4] = summary[4].reindex(index=relation, level=1)
-                summary.insert(5, pd.concat([summary[3], summary[4]], 
+                summary[4] = summary[4].reindex(index=relation, level=0)
+                summary[5] = summary[5].reindex(index=relation, level=1)
+                summary.insert(6, pd.concat([summary[4], summary[5]], 
                                             join="outer", axis=1))
-                summary[5] = summary[5].dropna()   
+                summary[6] = summary[6].dropna()   
                 # del summary[3], summary[4]
                 
                 #%%% Local residence time dataframes
-                supplyt = summary[5].loc[:,['av restime_1 in s', 'std av restime_1 in s']]
+                supplyt = summary[6].loc[:,['av restime_1 in s', 'std av restime_1 in s']]
                 supplyt = supplyt.reset_index()
                 del supplyt['Level'], supplyt['Sensor']
                 supplyt.rename(columns = {'av restime_1 in s':'rtime', 'std av restime_1 in s':'std rtime'}, inplace = True)
                 
-                exhaustt = summary[5].loc[:,['av restime_2 in s', 'std av restime_2 in s']]
+                exhaustt = summary[6].loc[:,['av restime_2 in s', 'std av restime_2 in s']]
                 exhaustt = exhaustt.reset_index()
                 del exhaustt['Level'], exhaustt['Sensor']
                 exhaustt.rename(columns = {'av restime_2 in s':'rtime', 'std av restime_2 in s':'std rtime'}, inplace = True)
                 
                 #%%% Local volume flow dataframes
-                supplyV = summary[5].loc[:,['vdot_sup', 'vdot_sup_std']]
+                supplyV = summary[6].loc[:,['vdot_sup', 'vdot_sup_std']]
                 supplyV = supplyV.reset_index()
                 del supplyV['Level'], supplyV['Sensor']
                 supplyV.rename(columns = {'vdot_sup':'vol flow', 'vdot_sup_std':'std vol flow'}, inplace = True)
                 
-                exhuastV = summary[5].loc[:,['vdot_exh', 'vdot_exh_std']]
+                exhuastV = summary[6].loc[:,['vdot_exh', 'vdot_exh_std']]
                 exhuastV = exhuastV.reset_index()
                 del exhuastV['Level'], exhuastV['Sensor']
                 exhuastV.rename(columns = {'vdot_exh':'vol flow', 'vdot_exh_std':'std vol flow'}, inplace = True)
             
                 #%%% Calculating the weighted residence times for the whole system
-                summary.insert(6,residence_Vflow_weighted(supplyV, supplyt))
-                summary[6].rename(columns = {'rtime':'av t1 in s', 'std rtime':'std av t1 in s'}, inplace = True)
-                summary.insert(7,residence_Vflow_weighted(exhuastV, exhaustt))
-                summary[7].rename(columns = {'rtime':'av t2 in s', 'std rtime':'std av t2 in s'}, inplace = True)
-
+                summary.insert(7,residence_Vflow_weighted(supplyV, supplyt))
+                summary[7].rename(columns = {'rtime':'av t1 in s', 'std rtime':'std av t1 in s'}, inplace = True)
+                summary.insert(8,residence_Vflow_weighted(exhuastV, exhaustt))
+                summary[8].rename(columns = {'rtime':'av t2 in s', 'std rtime':'std av t2 in s'}, inplace = True)
+                
+                #%%% Calculating the short-cut volume V2
+                tav2 = summary[8]['av t2 in s'].loc[0]                          # residence time short-cut volume, in s
+                tav2_std = summary[8]['std av t2 in s'].loc[0]
+                Vdt23 = summary[2]['volume_flow'].loc[0]                        # effective volume flow of the ventilation device, in m³/h
+                Vdt23_std = summary[2]['std_volume_flow'].loc[0]
+                V23 = summary[1]['Volume V23 in m³'].loc[0]                     # volume of the ventilated space, in m³
+                V23_std = summary[1]['std Volume V23 in m³'].loc[0]
+                alphaav3 = summary[3]['av restime_3 in h'].loc[0]/2             # average air age in the ventilated space, in h
+                alphaav3_std = summary[3]['std av restime_3 in h'].loc[0]/2
+                
+                V2 = short_cut_volume(tav2 = tav2, tav2_std = tav2_std,            
+                                     Vdt23 = Vdt23, Vdt23_std = Vdt23_std,          
+                                     V23 = V23, V23_std = V23_std,             
+                                     alphaav3 = alphaav3, alphaav3_std = alphaav3_std)
+                
+                summary[1] = pd.concat([summary[1], V2],join="outer", axis=1)
+                
+                #%%% Remaining volume V3 containing the occupied space
+                V23 = summary[1]['Volume V23 in m³'].loc[0]                    # volume of the ventilated space, in m³
+                V23_std = summary[1]['std Volume V23 in m³'].loc[0]
+                V2 = summary[1]['short-cut volume V2 in m³'].loc[0]            # volume of the ventilated space, in m³
+                V2_std = summary[1]['std short-cut volume V2 in m³'].loc[0]
+                
+                V3 = occupied_volume(V23, V23_std, V2, V2_std)
+                
+                summary[1] = pd.concat([summary[1], V3],join="outer", axis=1)
+                
+                #%%% Volume flow circulating through the volume of the occupied space
+                V3 = summary[1]['occupied volume V3 in m³'].loc[0]             # volume of the ventilated space, in m³
+                V3_std = summary[1]['std occupied volume V3 in m³'].loc[0]
+                alphaav3                                                       # residence time of the occupied space, in h
+                alphaav3_std
+                
+                Vdt3 = occupied_volumeflow(V3, V3_std, alphaav3, alphaav3_std)
+                
+                summary[2] = pd.concat([summary[2], Vdt3],join="outer", axis=1)
+                
+                #%%% Volume flow through the short-cut volume
+                Vdt3 = summary[2]['volume flow Vdt3 in m³/h'].loc[0]             # volume of the ventilated space, in m³
+                Vdt3_std = summary[2]['std volume flow Vdt3 in m³/h'].loc[0]
+                Vdt23
+                Vdt23_std
+                
+                Vdt2 = short_cut_volumeflow(Vdt3, Vdt3_std, Vdt23, Vdt23_std)
+                
+                summary[2] = pd.concat([summary[2], Vdt2],join="outer", axis=1)
+                
+                #%% Save a final summary file
                 pk.dump(summary, file_summary)
             
             string4 = 'No file "{}_summary_final" found. "summary" has been recreated and saved as "{}_summary_final".'.format(experiment, experiment) 
@@ -1624,7 +1672,251 @@ def summary_resitime_vflow(experiment = "W_I_e0_Herdern", reset=False):
         file_summary.close()
     
     return  summary
+
+#%% short_cut_volume
+def short_cut_volume(tav2, tav2_std,            # residence time short-cut volume, in s 
+                     Vdt23, Vdt23_std,          # effective volume flow of the ventilation device, in m³/h
+                     V23, V23_std,              # volume of the ventilated space, in m³
+                     alphaav3, alphaav3_std,   # average air age in the ventilated space, in h
+                     printeq = False,
+                     calc=True):
+    #%% Description
+    '''
+    This function is only applicable for a recirculation system according to:
+    Nauman, E. B., Buffham, B. A. (1983), Mixing in continuous flow systems. Wiley, New York, ISBN: 978-0471861911, page: 21.
     
+    Assumption:
+        - Recirculation between two subsystems of a system to be calculated
+        - subsystems are fully mixed -> nominal time constant of the subsystems equals their mean air age
+        - comparing ages and time constants between the subsystems they are usually not equal 
+    '''
+    
+    #%% Neccessary packages
+    from uncertainties import ufloat
+    
+    from sympy import init_printing
+    from sympy import symbols
+    from sympy import Eq
+    from sympy import Rational
+    from sympy import Add
+    
+    #%% Define parameters including uncertainty
+    tav2 = [ufloat(tav2, tav2_std), symbols(r'\left\langle\bar{t}\right\rangle_\mathrm{2}')]
+    Vdt23 = [ufloat(Vdt23, Vdt23_std), symbols(r'{\dot{V}}_\mathrm{23}')]
+    V23 = [ufloat(V23, V23_std), symbols(r'V_\mathrm{23}')]
+    alphaav3 = [ufloat(alphaav3, alphaav3_std), symbols(r'\left\langle\bar{\alpha}\right\rangle_\mathrm{3}')]
+    stoh = [3600, symbols(r'3600~\frac{\mathrm{s}}{\mathrm{h}}')]
+    
+    #%% Equation
+    V2 = [None]*2
+    
+    try:    
+        if printeq:
+            init_printing()
+            Eq(V2[1], Rational( Add(Rational(tav2[1],stoh[1]),(Vdt23[1]+V23[1]/alphaav3[1])),2+Rational(tav2[1],alphaav3[1])))
+        elif printeq and calc:
+            V2[0] = (tav2[0]/stoh[0]*(Vdt23[0]+V23[0]/alphaav3[0]))/(2+tav2[0]/alphaav3[0])
+            init_printing()
+            Eq(V2[1], Rational( Add(Rational(tav2[1],stoh[1]),(Vdt23[1]+V23[1]/alphaav3[1])),2+Rational(tav2[1],alphaav3[1])))
+        else:
+            V2[0] = (tav2[0]/stoh[0]*(Vdt23[0]+V23[0]/alphaav3[0]))/(2+tav2[0]/alphaav3[0])
+    except NameError:
+        V2[0] = (tav2[0]/stoh[0]*(Vdt23[0]+V23[0]/alphaav3[0]))/(2+tav2[0]/alphaav3[0])
+    
+    #%% Summarise in a dataframe
+    V2 = pd.DataFrame([{'short-cut volume V2 in m³': V2[0].n, 'std short-cut volume V2 in m³': V2[0].s}])
+
+    return V2
+
+#%%occupied_volume
+def occupied_volume(V23, V23_std,              # volume of the ventilated space, in m³
+                    V2, V2_std,                # total short-cut volume (sum of all short-cut volumes around the indoor aperatures), in m³
+                    printeq = False,
+                    calc=True):
+    #%% Description
+    '''
+    Volume remaining for the occupied space, in m³
+    '''
+    
+    #%% Neccessary packages
+    from uncertainties import ufloat
+    
+    from sympy import init_printing
+    from sympy import symbols
+    from sympy import Eq
+    
+    #%% Define parameters including uncertainty
+    V23 = [ufloat(V23, V23_std), symbols(r'V_\mathrm{23}')]
+    V2 = [ufloat(V2, V2_std), symbols(r'V_\mathrm{2}')]
+    
+    #%% Equation
+    V3 = [None]*2
+    
+    try:    
+        if printeq:
+            init_printing()
+            Eq(V3[1], V23[1] - V2[1])
+        elif printeq and calc:
+            V3[0] = V23[0] - V2[0]
+            init_printing()
+            Eq(V3[1], V23[1] - V2[1])
+        else:
+            V3[0] = V23[0] - V2[0]
+    except NameError:
+        V3[0] = V23[0] - V2[0]
+    
+    #%% Summarise in a dataframe
+    V3 = pd.DataFrame([{'occupied volume V3 in m³': V3[0].n, 'std occupied volume V3 in m³': V3[0].s}])
+
+    return V3
+
+#%% occupied_volumeflow
+def occupied_volumeflow(V3, V3_std,              # volume of the ventilated space, in m³
+                        alphaav3, alphaav3_std,                # total short-cut volume (sum of all short-cut volumes around the indoor aperatures), in m³
+                        printeq = False,
+                        calc=True):
+    #%% Description
+    '''
+    The volume for the occupied space is ideally mixed therefore its nominal
+    time constant tau3 equals its average age alphaav3.
+    '''
+    
+    #%% Neccessary packages
+    from uncertainties import ufloat
+    
+    from sympy import init_printing
+    from sympy import symbols
+    from sympy import Eq
+    from sympy import Rational
+    
+    #%% Define parameters including uncertainty
+    V3 = [ufloat(V3, V3_std), symbols(r'V_\mathrm{3}')]
+    alphaav3 = [ufloat(alphaav3, alphaav3_std), symbols(r'\left\langle\bar{\alpha}\right\rangle_\mathrm{3}')]
+    
+    #%% Equation
+    Vdt3 = [None]*2
+    
+    try:    
+        if printeq:
+            init_printing()
+            Eq(Vdt3[1], Rational(V3[1],alphaav3[1]))
+        elif printeq and calc:
+            Vdt3[0] = V3[0]/alphaav3[0]
+            init_printing()
+            Eq(Vdt3[1], Rational(V3[1],alphaav3[1]))
+        else:
+            Vdt3[0] = V3[0]/alphaav3[0]
+    except NameError:
+        Vdt3[0] = V3[0]/alphaav3[0]
+    
+    #%% Summarise in a dataframe
+    Vdt3 = pd.DataFrame([{'volume flow Vdt3 in m³/h': Vdt3[0].n, 'std volume flow Vdt3 in m³/h': Vdt3[0].s}])
+
+    return Vdt3
+
+#%% occupied_volumeflow
+def short_cut_volumeflow(Vdt3, Vdt3_std,                # volume flow for the occupied space, in m³/h
+                         Vdt23, Vdt23_std,            # volume flow of the ventilated space, in m³/h
+                         printeq = False,
+                         calc=True):
+    #%% Description
+    '''
+    According to Nauman et al. the short-cut volume flow of a back-feed 
+    recirculation system is the sum out of the system volume flow V23 and 
+    the recycle volume flow V3
+    
+    (The volume for the short-cut volume is ideally mixed therefore its nominal
+    time constant tau2 equals its average age alphaav2.)
+    '''
+    
+    #%% Neccessary packages
+    from uncertainties import ufloat
+    
+    from sympy import init_printing
+    from sympy import symbols
+    from sympy import Eq
+    
+    #%% Define parameters including uncertainty
+    Vdt3 = [ufloat(Vdt3, Vdt3_std), symbols(r'\dot{V}_\mathrm{3}')]
+    Vdt23 = [ufloat(Vdt23, Vdt23_std), symbols(r'\dot{V}_\mathrm{23}')]
+    
+    #%% Equation
+    Vdt2 = [None]*2
+    
+    try:    
+        if printeq:
+            init_printing()
+            Eq(Vdt2[1], Vdt3[1] + Vdt23[1])
+        elif printeq and calc:
+            Vdt2[0] = Vdt3[0] + Vdt23[0]
+            init_printing()
+            Eq(Vdt2[1], Vdt3[1] + Vdt23[1])
+        else:
+            Vdt2[0] = Vdt3[0] + Vdt23[0]
+    except NameError:
+        Vdt2[0] = Vdt3[0] + Vdt23[0]
+    
+    #%% Summarise in a dataframe
+    Vdt2 = pd.DataFrame([{'volume flow Vdt2 in m³/h': Vdt2[0].n, 'std volume flow Vdt2 in m³/h': Vdt2[0].s}])
+
+    return Vdt2
+
+def plot_resitimes(tav):
+    
+    pd.options.plotting.backend = "plotly" # NOTE: This changes the plot backend which should be resetted after it is not needed anymore. Otherwise it will permanently cause problems in future, since it is a permanent change.
+    
+    import plotly.graph_objects as go
+    fig = go.Figure()
+    fig.add_trace(go.Bar(#title = time["short_name"][t],
+                                  name=r'$\left\langle\bar{t}\right\rangle_\mathrm{3} in \mathrm{3}$',
+                                  x = tav["Experiment"], 
+                                  y = sup_exh_df["av t3 in s"],
+                                  #error_y=dict(value=sup_exh_df["std meas room_av"].max())
+                                  )
+                      )
+    fig.add_trace(go.Scatter(name='calc room_av',
+                                  x = sup_exh_df["datetime"], 
+                                  y = sup_exh_df["calc room_av"],
+                                  #error_y = dict(value=sup_exh_df["std calc room_av"].max())
+                                  )
+                      )
+    fig.add_trace(go.Scatter(name='calc room_exh',
+                                  x = sup_exh_df["datetime"], 
+                                  y = sup_exh_df["calc room_exh"],
+                                  #error_y=dict(value=sup_exh_df["std calc room_exh"].max())
+                                  )
+                      )
+    fig.add_trace(go.Scatter(name='d calc exh-av',
+                                  x = sup_exh_df["datetime"], 
+                                  y = sup_exh_df["d calc exh-av"],
+                                  #error_y=dict(value=sup_exh_df["std d calc exh-av"].max())
+                                  )
+                      )
+    fig.add_trace(go.Scatter(name='supply',x=sup_exh_df["datetime"], y = sup_exh_df["supply"]))
+    fig.add_trace(go.Scatter(name='exhaust',x=sup_exh_df["datetime"], y = sup_exh_df["exhaust"]))
+        
+    fig.update_layout(
+            title="{} {}".format(database, aperture_sensor),
+            xaxis_title="Zeit t in hh:mm:ss",
+            yaxis_title=r'Verweilzeit $\bar{t}_1$',
+            legend_title="Legende",
+            font=dict(
+                family="Segoe UI",
+                size=18,
+                color="black"
+            )
+        )
+        
+    fig.show()
+    
+    import plotly.io as pio
+    
+    pio.renderers.default='browser'
+    pd.options.plotting.backend = "matplotlib"
+    
+    pass
+
+
 """
     Tasks to be done:
         1.) Include uncertainty evaluation for tau_e and tau_s to be returned 
@@ -1635,19 +1927,56 @@ def summary_resitime_vflow(experiment = "W_I_e0_Herdern", reset=False):
 
 """
 
+summary = summary_resitime_vflow(experiment = "W_I_e0_Herdern", reset=False)
+
+tav2=summary[8]['av t2 in s'].loc[0]
+tav2_std=summary[8]['std av t2 in s'].loc[0]
+Vdt23=summary[2]['volume_flow'].loc[0]
+Vdt23_std=summary[2]['std_volume_flow'].loc[0]
+V23=summary[1]['Volume V23 in m³'].loc[0]
+V23_std=summary[1]['std Volume V23 in m³'].loc[0]
+alphaav3=summary[3]['av restime_3 in h'].loc[0]/2
+alphaav3_std=summary[3]['std av restime_3 in h'].loc[0]/2
 
 
-experiments = ["S_H_e0_Herdern", "W_I_e0_Herdern","W_H_e0_Herdern","S_H_e0_ESHL","S_I_e0_ESHL"]
+V2 = short_cut_volume(tav2 = tav2, tav2_std = tav2_std,            
+                     Vdt23 = Vdt23, Vdt23_std = Vdt23_std,          
+                     V23 = V23, V23_std = V23_std,             
+                     alphaav3 = alphaav3, alphaav3_std = alphaav3_std)
 
-# summary = summary_resitime_vflow(experiment = "W_I_e0_Herdern")
+experiments = ["S_I_e0_Herdern", "S_H_e0_Herdern", "W_I_e0_Herdern","W_H_e0_Herdern",
+               "S_H_e0_ESHL","S_I_e0_ESHL", "S_I_e0_Herdern", ] #"W_H_e0_ESHL", "W_I_e0_ESHL"
 
 summaryE = []
-
+reistimesE = pd.DataFrame(columns=([0,
+ 'av restime_3 in h',
+ 'std av restime_3 in h',
+ 'av t1 in s',
+ 'std av t1 in s',
+ 'av t2 in s',
+ 'std av t2 in s']))
 for e in experiments:
     summary = summary_resitime_vflow(e)
+    new_row = pd.DataFrame(columns=([0,
+         'av restime_3 in h',
+         'std av restime_3 in h',
+         'av t1 in s',
+         'std av t1 in s',
+         'av t2 in s',
+         'std av t2 in s']))
+    new_row = pd.concat([pd.Series(summary[0]), summary[3], summary[7], summary[8]], join="outer", axis=1)
+    reistimesE = reistimesE.append(new_row)
     summaryE.append(summary)
 
+reistimesE['av restime_3 in h'] = reistimesE['av restime_3 in h'] * 3600
+reistimesE['std av restime_3 in h'] = reistimesE['std av restime_3 in h'] * 3600
+reistimesE = reistimesE.rename(columns={0: 'Experiment','av restime_3 in h': 'av t3 in s', 'std av restime_3 in h': 'std av t3 in s'})
+reistimesE = reistimesE.reset_index()
+del reistimesE['index']
+    
 
+
+# # summary = summary_resitime_vflow(experiment = "W_I_e0_Herdern")
 
 # S_H_e0_Herdern = [Summarise_vflows(experiment = "S_H_e0_Herdern"), 
 #                   Summarise_resitimes(experiment = "S_H_e0_Herdern")

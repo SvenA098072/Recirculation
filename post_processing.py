@@ -100,14 +100,15 @@ class CBO_ESHL:
     def volume(self):
         try:
             if 'cbo' in self.database:
-                self.v = pd.DataFrame([{'Volume':195.1, 'std Volume':195.1*0.1}])
+                self.v = pd.DataFrame([{'Volume V23 in m³':195.1, 'std Volume V23 in m³':195.1*0.1}])
             elif 'eshl' in self.database:
-                self.v = pd.DataFrame([{'Volume':133.9, 'std Volume':133.9*0.1}])
+                self.v = pd.DataFrame([{'Volume V23 in m³':133.9, 'std Volume V23 in m³':133.9*0.1}])
             else:
+                string = 'The current CBO_ESHL.database is not valid. A volume can not be returned CBO_ESHL.volume().'
                 raise NameError
                 pass
         except NameError:
-               return 'The current CBO_ESHL.database is not valid. A volume can not be returned CBO_ESHL.volume().'
+            prYellow(string)
         return self.v
         
     def volume_flow(self,  level_eshl = "WZ_100", level_cbo = "K1_St5" ):
