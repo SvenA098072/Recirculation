@@ -1661,6 +1661,15 @@ def summary_resitime_vflow(experiment = "W_I_e0_Herdern", reset=False):
                 
                 summary[2] = pd.concat([summary[2], Vdt2],join="outer", axis=1)
                 
+                #%%% Short-cut (K) and stagnation (S) ratio
+                Vdt23
+                Vdt23_std
+                Vdt3 = summary[2]['volume flow Vdt2 in m³/h'].loc[0]             # volume of the ventilated space, in m³
+                Vdt3_std = summary[2]['std volume flow Vdt2 in m³/h'].loc[0]
+                
+                Vdt2 = short_cut_stagnation_ratio(Vdt23, Vdt23_std,Vdt3, Vdt3_std)
+                
+                summary[2] = pd.concat([summary[2], Vdt2],join="outer", axis=1)
                 #%% Save a final summary file
                 pk.dump(summary, file_summary)
             
@@ -1861,60 +1870,117 @@ def short_cut_volumeflow(Vdt3, Vdt3_std,                # volume flow for the oc
 
     return Vdt2
 
-def plot_resitimes(tav):
+#%% occupied_volumeflow
+def short_cut_stagnation_ratio(Vdt23, Vdt23_std,        # volume flow of the ventilated space, in m³/hVdt23, Vdt23_std,            
+                               Vdt2, Vdt2_std,          # volume flow of the short-cut volume, in m³/h
+                               printeq = False,
+                               calc=True):
+    #%% Description
+    '''
+    K and S rate the the volume flows moving inside the building zone.
     
-    pd.options.plotting.backend = "plotly" # NOTE: This changes the plot backend which should be resetted after it is not needed anymore. Otherwise it will permanently cause problems in future, since it is a permanent change.
+             Vdt23       Vdt23        Vdt3
+    K := ------------- = ----- = 1 - ------ =: 1 - S
+         Vdt23 + Vdt3    Vdt2         Vdt2
+         
+         K      Short-cut rate (german: Kurzschlussrate),       in %Vdt
+         S      Stagnation rate (german: Stagnationsrate),      in %Vdt
+         Vdt23  Volume flow entering and leaving the system,    in m³/h
+         Vdt2   Volume flow through the short-cut volume,       in m³/h
+         Vdt3   Volume flow through the rest of the room,       in m³/h
+    '''
     
-    import plotly.graph_objects as go
-    fig = go.Figure()
-    fig.add_trace(go.Bar(#title = time["short_name"][t],
-                                  name=r'$\left\langle\bar{t}\right\rangle_\mathrm{3} in \mathrm{3}$',
-                                  x = tav["Experiment"], 
-                                  y = sup_exh_df["av t3 in s"],
-                                  #error_y=dict(value=sup_exh_df["std meas room_av"].max())
-                                  )
-                      )
-    fig.add_trace(go.Scatter(name='calc room_av',
-                                  x = sup_exh_df["datetime"], 
-                                  y = sup_exh_df["calc room_av"],
-                                  #error_y = dict(value=sup_exh_df["std calc room_av"].max())
-                                  )
-                      )
-    fig.add_trace(go.Scatter(name='calc room_exh',
-                                  x = sup_exh_df["datetime"], 
-                                  y = sup_exh_df["calc room_exh"],
-                                  #error_y=dict(value=sup_exh_df["std calc room_exh"].max())
-                                  )
-                      )
-    fig.add_trace(go.Scatter(name='d calc exh-av',
-                                  x = sup_exh_df["datetime"], 
-                                  y = sup_exh_df["d calc exh-av"],
-                                  #error_y=dict(value=sup_exh_df["std d calc exh-av"].max())
-                                  )
-                      )
-    fig.add_trace(go.Scatter(name='supply',x=sup_exh_df["datetime"], y = sup_exh_df["supply"]))
-    fig.add_trace(go.Scatter(name='exhaust',x=sup_exh_df["datetime"], y = sup_exh_df["exhaust"]))
+    #%% Neccessary packages
+    from uncertainties import ufloat
+    
+    from sympy import init_printing
+    from sympy import symbols
+    from sympy import Eq
+    from sympy import Rational
+    
+    #%% Define parameters including uncertainty
+    Vdt2 = [ufloat(Vdt2, Vdt2_std), symbols(r'\dot{V}_\mathrm{2}')]
+    Vdt23 = [ufloat(Vdt23, Vdt23_std), symbols(r'\dot{V}_\mathrm{23}')]
+    
+    #%% Equation
+    K = [None]*2
+    S = [None]*2
+    
+    try:    
+        if printeq:
+            init_printing()
+            Eq(K[1], Rational(Vdt23[1], Vdt2[1]))
+        elif printeq and calc:
+            K[0] = Vdt23[0]/Vdt2[0]*100
+            S[0] = 100 - K[0]
+            init_printing()
+            Eq(K[1], Rational(Vdt23[1], Vdt2[1]))
+        else:
+            K[0] = Vdt23[0]/Vdt2[0]*100
+            S[0] = 100 - K[0]
+    except NameError:
+        K[0] = Vdt23[0]/Vdt2[0]*100
+        S[0] = 100 - K[0]
+    
+    #%% Summarise in a dataframe
+    Vdt2 = pd.DataFrame([{'volume flow Vdt2 in m³/h': Vdt2[0].n, 'std volume flow Vdt2 in m³/h': Vdt2[0].s}])
+
+    return Vdt2
+
+# def plot_resitimes(tav):
+    
+#     pd.options.plotting.backend = "plotly" # NOTE: This changes the plot backend which should be resetted after it is not needed anymore. Otherwise it will permanently cause problems in future, since it is a permanent change.
+    
+#     import plotly.graph_objects as go
+#     fig = go.Figure()
+#     fig.add_trace(go.Bar(#title = time["short_name"][t],
+#                                   name=r'$\left\langle\bar{t}\right\rangle_\mathrm{3} in \mathrm{3}$',
+#                                   x = tav["Experiment"], 
+#                                   y = sup_exh_df["av t3 in s"],
+#                                   #error_y=dict(value=sup_exh_df["std meas room_av"].max())
+#                                   )
+#                       )
+#     fig.add_trace(go.Scatter(name='calc room_av',
+#                                   x = sup_exh_df["datetime"], 
+#                                   y = sup_exh_df["calc room_av"],
+#                                   #error_y = dict(value=sup_exh_df["std calc room_av"].max())
+#                                   )
+#                       )
+#     fig.add_trace(go.Scatter(name='calc room_exh',
+#                                   x = sup_exh_df["datetime"], 
+#                                   y = sup_exh_df["calc room_exh"],
+#                                   #error_y=dict(value=sup_exh_df["std calc room_exh"].max())
+#                                   )
+#                       )
+#     fig.add_trace(go.Scatter(name='d calc exh-av',
+#                                   x = sup_exh_df["datetime"], 
+#                                   y = sup_exh_df["d calc exh-av"],
+#                                   #error_y=dict(value=sup_exh_df["std d calc exh-av"].max())
+#                                   )
+#                       )
+#     fig.add_trace(go.Scatter(name='supply',x=sup_exh_df["datetime"], y = sup_exh_df["supply"]))
+#     fig.add_trace(go.Scatter(name='exhaust',x=sup_exh_df["datetime"], y = sup_exh_df["exhaust"]))
         
-    fig.update_layout(
-            title="{} {}".format(database, aperture_sensor),
-            xaxis_title="Zeit t in hh:mm:ss",
-            yaxis_title=r'Verweilzeit $\bar{t}_1$',
-            legend_title="Legende",
-            font=dict(
-                family="Segoe UI",
-                size=18,
-                color="black"
-            )
-        )
+#     fig.update_layout(
+#             title="{} {}".format(database, aperture_sensor),
+#             xaxis_title="Zeit t in hh:mm:ss",
+#             yaxis_title=r'Verweilzeit $\bar{t}_1$',
+#             legend_title="Legende",
+#             font=dict(
+#                 family="Segoe UI",
+#                 size=18,
+#                 color="black"
+#             )
+#         )
         
-    fig.show()
+#     fig.show()
     
-    import plotly.io as pio
+#     import plotly.io as pio
     
-    pio.renderers.default='browser'
-    pd.options.plotting.backend = "matplotlib"
+#     pio.renderers.default='browser'
+#     pd.options.plotting.backend = "matplotlib"
     
-    pass
+#     pass
 
 
 """
@@ -1945,7 +2011,7 @@ V2 = short_cut_volume(tav2 = tav2, tav2_std = tav2_std,
                      alphaav3 = alphaav3, alphaav3_std = alphaav3_std)
 
 experiments = ["S_I_e0_Herdern", "S_H_e0_Herdern", "W_I_e0_Herdern","W_H_e0_Herdern",
-               "S_H_e0_ESHL","S_I_e0_ESHL", "S_I_e0_Herdern", ] #"W_H_e0_ESHL", "W_I_e0_ESHL"
+               "S_H_e0_ESHL","S_I_e0_ESHL",] #"W_H_e0_ESHL", "W_I_e0_ESHL"
 
 summaryE = []
 reistimesE = pd.DataFrame(columns=([0,
