@@ -1664,12 +1664,57 @@ def summary_resitime_vflow(experiment = "W_I_e0_Herdern", reset=False):
                 #%%% Short-cut (K) and stagnation (S) ratio
                 Vdt23
                 Vdt23_std
-                Vdt3 = summary[2]['volume flow Vdt2 in m³/h'].loc[0]             # volume of the ventilated space, in m³
-                Vdt3_std = summary[2]['std volume flow Vdt2 in m³/h'].loc[0]
+                Vdt2 = summary[2]['volume flow Vdt2 in m³/h'].loc[0]             # volume of the ventilated space, in m³
+                Vdt2_std = summary[2]['std volume flow Vdt2 in m³/h'].loc[0]
                 
-                Vdt2 = short_cut_stagnation_ratio(Vdt23, Vdt23_std,Vdt3, Vdt3_std)
+                KS = short_cut_stagnation_ratio(Vdt23, Vdt23_std,Vdt2, Vdt2_std)
+                '''
+                KS = pd.DataFrame([{'Kurzschluss in %Vdt': K[0].n, 'std Kurzschluss in %Vdt': K[0].s,
+                                    'Stagnation in %Vdt': S[0].n, 'std Stagnation in %Vdt': S[0].s }])
+                '''
+                summary.insert(9,KS)
                 
-                summary[2] = pd.concat([summary[2], Vdt2],join="outer", axis=1)
+                #%%% Nominal time constants tau3, tau2 and tau1
+                '''
+                The basic assumption of this model is that the distinction
+                between the subsystems is idealy mixed behaviour of the
+                subsystems. Meaning that the relative exchange efficiency is:
+                
+                                     tau          tau
+                epsilon^(a,r) = -------------- = ----- = 50%
+                                2 * alphaav       tav
+                
+                Therefore:
+                    tau3 = alphaav
+                    tau2 = 0.5 * tav2
+                    tau1 = 0.5 * tav1                    
+                '''                
+                tau = pd.DataFrame([{'tau3 in h': alphaav3, 'std tau3 in h': alphaav3_std,
+                                    'tau2 in h': 0.5*summary[8]['av t2 in s'].iloc[0]/3600, 'std tau2 in h': 0.5*summary[8]['std av t2 in s'].iloc[0]/3600,
+                                    'tau1 in h': 0.5*summary[7]['av t1 in s'].iloc[0]/3600, 'std tau1 in h': 0.5*summary[7]['std av t1 in s'].iloc[0]/3600}])
+                
+                summary.insert(10,tau)
+                
+                #%%% Response characteristics of the recycle system 23
+                RecycSys23 = recyclesystem(Vdt12=summary[2]['volume_flow'].loc[0], Vdt12_std=summary[2]['std_volume_flow'].loc[0],     # volume flow entering and leaving the whole system V12, in m³/h           
+                                         Vdt2=summary[2]['volume flow Vdt3 in m³/h'].loc[0], Vdt2_std=summary[2]['std volume flow Vdt3 in m³/h'].loc[0],       # volume flow of the backfeed subsystem V2, in m³/h
+                                         tau1=summary[10]['tau2 in h'].loc[0], tau1_std=summary[10]['std tau2 in h'].loc[0],   # nominal time constant of subsystem V1, in h
+                                         tau2=summary[10]['tau3 in h'].loc[0], tau2_std=summary[10]['std tau3 in h'].loc[0])
+                
+                summary.insert(11,RecycSys23)
+                
+                #%%% Calculate exchange efficiency characteristics
+                EE = exchange_efficiency(tau=summary[11]['tau in h'].loc[0],  tau_std=summary[11]['std tau in h'].loc[0],
+                                         sigma_dimless=summary[11]['(sigma²)* in -'].loc[0],  sigma_dimless_std=summary[11]['std (sigma²)* in -'].loc[0])
+
+                summary.insert(12,EE)
+                
+                #%%% Calculate recirculation ratio
+                R = recirculation_ratio(S=summary[9]['Stagnation in %Vdt'].iloc[0],S_std=summary[9]['std Stagnation in %Vdt'].loc[0],
+                                        epsilonabs=summary[12]['epsilon in %t'].iloc[0],epsilonabs_std=summary[12]['std epsilon in %t'].iloc[0])
+                
+                summary[9] = pd.concat([summary[9], R],join="outer", axis=1)
+                
                 #%% Save a final summary file
                 pk.dump(summary, file_summary)
             
@@ -1681,6 +1726,150 @@ def summary_resitime_vflow(experiment = "W_I_e0_Herdern", reset=False):
         file_summary.close()
     
     return  summary
+
+#%% exchange_efficiency
+def exchange_efficiency(tau=0.0,  tau_std=99.9,
+                        tav=0.0,  tav_std=9.99,
+                        alphaav=0.0, alphaav_std=9.99,
+                        n=0.0, n_std=9.99,
+                        navex=0.0, navex_std=9.99,
+                        navr=0.0, navr_std=9.99,
+                        sigma_dimless=0.0,  sigma_dimless_std=9.99 # dimensonless variance
+                        ):
+    #%% Description
+    '''
+    epsilon^(a) can be calculated through various ways.
+    
+                    tau     navex       tau        1     navr       1
+    epsilon^(a) := ----- = -------- = ---------- = --- * ------- = -------------  in %t
+                    tav      n        2*alphaav     2       n       1 + sigma²*
+         
+         tau        nominal time constant,                  in h
+         tav        average residence time,                 in h
+         navex     exhaust exchange rate,                  in 1/h
+         n          nominal exchange rate,                  in 1/h
+         alphaav    average age in the system,              in h
+         navr      average exchange rate in the system,    in 1/h
+    '''
+    
+    #%% Neccessary packages
+    from uncertainties import ufloat
+    import pandas as pd
+    import numpy as np
+    import sympy as sym
+    from sympy import init_printing
+    from sympy import Symbol
+    
+    #%% Define parameters including uncertainty
+    sigma_dimless = [ufloat(sigma_dimless, sigma_dimless_std), Symbol(r'\left(\sigma^2\right)^*')]
+    tau = [ufloat(tau, tau_std), Symbol(r'\tau')]
+    tav = [ufloat(tav, tav_std), Symbol(r'\bar{t}')]
+    alphaav = [ufloat(alphaav, alphaav_std), Symbol(r'\left\langle\bar{\alpha}\right\rangle')]
+    n = [ufloat(n, n_std), Symbol(r'n')]
+    navex = [ufloat(navex, navex_std), Symbol(r'\left\langle\bar{n}\right\rangle_e')]
+    navr = [ufloat(navr, navr_std), Symbol(r'\left\langle\bar{n}\right\rangle_r')]
+    
+    #%% Equation
+    epsilon = [None]*2
+ 
+    for i in range(2):
+    
+        if tau[0].n>0:
+            n[0] = 1/tau[0]
+            n[1] = 1/tau[1]
+        elif n[0].n>0: 
+            tau[0] = 1/n[0]
+            tau[1] = 1/n[1]
+        else:
+            pass
+        
+        if tav[0].n>0:
+            alphaav[0] = tav[0]*0.5
+            alphaav[1] = tav[1]*0.5
+            
+            navex[0] = 1/tav[0]
+            navex[1] = 1/tav[1]
+            
+            navr[0] = 1/alphaav[0]
+            navr[1] = 1/alphaav[1]
+        elif alphaav[0].n>0: 
+            tav[0] = 2*alphaav[0]
+            tav[1] = 2*alphaav[1]
+            
+            navex[0] = 1/tav[0]
+            navex[1] = 1/tav[1]
+            
+            navr[0] = 1/alphaav[0]
+            navr[1] = 1/alphaav[1]
+        elif navex[0].n>0:
+            tav[0] = 1/navex[0]
+            tav[1] = 1/navex[1]
+            
+            alphaav[0] = tav[0]*0.5
+            alphaav[1] = tav[1]*0.5
+            
+            navr[0] = 1/alphaav[0]
+            navr[1] = 1/alphaav[1]
+        elif navr[0].n>0:
+            alphaav[0] = 1/navr[0]
+            alphaav[1] = 1/navr[1]
+        else:
+            pass
+    
+        if tau[0].n>0 and tav[0].n>0:
+            epsilon[0] = tau[0]/tav[0]
+            epsilon[1] = tau[1]/tav[1]
+            
+            sigma_dimless[0] = 1/epsilon[0]-1
+            sigma_dimless[1] = 1/epsilon[1]-1
+            pass
+        elif sigma_dimless[0].n>0 and tav[0].n>0:
+            epsilon[0] = 1/(1+sigma_dimless[0])
+            epsilon[1] = 1/(1+sigma_dimless[1])
+            
+            tau[0] = tav[0]/(1+sigma_dimless[0])
+            tau[1] = tav[1]/(1+sigma_dimless[1])
+            pass
+        elif sigma_dimless[0].n>0 and tau[0].n>0:
+            epsilon[0] = 1/(1+sigma_dimless[0])
+            epsilon[1] = 1/(1+sigma_dimless[1])
+            
+            tav[0] = tau[0]*(1+sigma_dimless[0])
+            tav[1] = tau[1]*(1+sigma_dimless[1])
+            pass
+        else:
+            pass
+
+    #%% Summarise in a dataframe
+    global df_EE
+    df_EE = pd.DataFrame([{'epsilon in %t':epsilon[0].n*100, 'std epsilon in %t':epsilon[0].s*100,
+                           'tau in h':tau[0].n, 'std tau in h':tau[0].s,
+                           'tav in h':tav[0].n, 'std tav in h':tav[0].s,
+                           'alphaav in h':alphaav[0].n, 'std alphaav in h':alphaav[0].s,
+                           'n in 1/h':n[0].n, 'std n in 1/h':n[0].s,
+                           'navex in 1/h':navex[0].n, 'std navex in 1/h':navex[0].s,
+                           'navr in 1/h':navr[0].n, 'std navr in 1/h':navr[0].s,
+                           '(sigma²)* in -': sigma_dimless[0].n, 'std (sigma²)* in -': sigma_dimless[0].s
+                           }])
+
+    
+    try:
+        if df_EE.isin([0]).any().any(): 
+            if sigma_dimless[0].n>0:
+                epsilon[0] = 1/(1+sigma_dimless[0])
+                epsilon[1] = 1/(1+sigma_dimless[1])
+                df_EE = pd.DataFrame([{'(sigma²)* in -': sigma_dimless[0].n, 'std (sigma²)* in -': sigma_dimless[0].s}])
+                print('ATTENTION: I can only calculate the exchange efficiency. Please, pass another argument.')
+            else:  
+                pass
+            string = prYellow('ValueError: exchange_efficiency() misses a value.')
+            raise ValueError
+    except ValueError:
+        string
+ 
+    return df_EE
+
+
 
 #%% short_cut_volume
 def short_cut_volume(tav2, tav2_std,            # residence time short-cut volume, in s 
@@ -1779,7 +1968,7 @@ def occupied_volume(V23, V23_std,              # volume of the ventilated space,
 
     return V3
 
-#%% occupied_volumeflow
+#%% volumeflow stagnating (avialable for the occupied zone)
 def occupied_volumeflow(V3, V3_std,              # volume of the ventilated space, in m³
                         alphaav3, alphaav3_std,                # total short-cut volume (sum of all short-cut volumes around the indoor aperatures), in m³
                         printeq = False,
@@ -1823,7 +2012,7 @@ def occupied_volumeflow(V3, V3_std,              # volume of the ventilated spac
 
     return Vdt3
 
-#%% occupied_volumeflow
+#%% short-cut volumeflow
 def short_cut_volumeflow(Vdt3, Vdt3_std,                # volume flow for the occupied space, in m³/h
                          Vdt23, Vdt23_std,            # volume flow of the ventilated space, in m³/h
                          printeq = False,
@@ -1870,8 +2059,8 @@ def short_cut_volumeflow(Vdt3, Vdt3_std,                # volume flow for the oc
 
     return Vdt2
 
-#%% occupied_volumeflow
-def short_cut_stagnation_ratio(Vdt23, Vdt23_std,        # volume flow of the ventilated space, in m³/hVdt23, Vdt23_std,            
+#%% short-cut and stagnation ratio
+def short_cut_stagnation_ratio(Vdt23, Vdt23_std,        # volume flow of the ventilated space, in m³/h            
                                Vdt2, Vdt2_std,          # volume flow of the short-cut volume, in m³/h
                                printeq = False,
                                calc=True):
@@ -1894,13 +2083,13 @@ def short_cut_stagnation_ratio(Vdt23, Vdt23_std,        # volume flow of the ven
     from uncertainties import ufloat
     
     from sympy import init_printing
-    from sympy import symbols
+    from sympy import Symbol
     from sympy import Eq
     from sympy import Rational
     
     #%% Define parameters including uncertainty
-    Vdt2 = [ufloat(Vdt2, Vdt2_std), symbols(r'\dot{V}_\mathrm{2}')]
-    Vdt23 = [ufloat(Vdt23, Vdt23_std), symbols(r'\dot{V}_\mathrm{23}')]
+    Vdt2 = [ufloat(Vdt2, Vdt2_std), Symbol(r'\dot{V}_\mathrm{2}')]
+    Vdt23 = [ufloat(Vdt23, Vdt23_std), Symbol(r'\dot{V}_\mathrm{23}')]
     
     #%% Equation
     K = [None]*2
@@ -1923,10 +2112,215 @@ def short_cut_stagnation_ratio(Vdt23, Vdt23_std,        # volume flow of the ven
         S[0] = 100 - K[0]
     
     #%% Summarise in a dataframe
-    Vdt2 = pd.DataFrame([{'volume flow Vdt2 in m³/h': Vdt2[0].n, 'std volume flow Vdt2 in m³/h': Vdt2[0].s}])
+    KS = pd.DataFrame([{'Kurzschluss in %Vdt': K[0].n, 'std Kurzschluss in %Vdt': K[0].s,
+                        'Stagnation in %Vdt': S[0].n, 'std Stagnation in %Vdt': S[0].s }])
 
-    return Vdt2
+    return KS
 
+#%% occupied_volumeflow
+def short_cut_stagnation_ratio(Vdt23, Vdt23_std,        # volume flow of the ventilated space, in m³/h            
+                               Vdt2, Vdt2_std,          # volume flow of the short-cut volume, in m³/h
+                               printeq = False,
+                               calc=True):
+    #%% Description
+    '''
+    K and S rate the the volume flows moving inside the building zone.
+    
+             Vdt23       Vdt23        Vdt3
+    K := ------------- = ----- = 1 - ------ =: 1 - S
+         Vdt23 + Vdt3    Vdt2         Vdt2
+         
+         K      Short-cut rate (german: Kurzschlussrate),       in %Vdt
+         S      Stagnation rate (german: Stagnationsrate),      in %Vdt
+         Vdt23  Volume flow entering and leaving the system,    in m³/h
+         Vdt2   Volume flow through the short-cut volume,       in m³/h
+         Vdt3   Volume flow through the rest of the room,       in m³/h
+    '''
+    
+    #%% Neccessary packages
+    from uncertainties import ufloat
+    
+    from sympy import init_printing
+    from sympy import Symbol
+    from sympy import Eq
+    from sympy import Rational
+    
+    #%% Define parameters including uncertainty
+    Vdt2 = [ufloat(Vdt2, Vdt2_std), Symbol(r'\dot{V}_\mathrm{2}')]
+    Vdt23 = [ufloat(Vdt23, Vdt23_std), Symbol(r'\dot{V}_\mathrm{23}')]
+    
+    #%% Equation
+    K = [None]*2
+    S = [None]*2
+    
+    try:    
+        if printeq:
+            init_printing()
+            Eq(K[1], Rational(Vdt23[1], Vdt2[1]))
+        elif printeq and calc:
+            K[0] = Vdt23[0]/Vdt2[0]*100
+            S[0] = 100 - K[0]
+            init_printing()
+            Eq(K[1], Rational(Vdt23[1], Vdt2[1]))
+        else:
+            K[0] = Vdt23[0]/Vdt2[0]*100
+            S[0] = 100 - K[0]
+    except NameError:
+        K[0] = Vdt23[0]/Vdt2[0]*100
+        S[0] = 100 - K[0]
+    
+    #%% Summarise in a dataframe
+    KS = pd.DataFrame([{'Kurzschluss in %Vdt': K[0].n, 'std Kurzschluss in %Vdt': K[0].s,
+                        'Stagnation in %Vdt': S[0].n, 'std Stagnation in %Vdt': S[0].s }])
+
+    return KS
+
+#%% occupied_volumeflow
+def recyclesystem(Vdt12=40.0, Vdt12_std=5.0,     # volume flow entering and leaving the whole system V12, in m³/h           
+                  Vdt2=50.0, Vdt2_std=6.0,       # volume flow of the backfeed subsystem V2, in m³/h
+                  tau1=0.009, tau1_std=0.0001,   # nominal time constant of subsystem V1, in h
+                  tau2=3.2, tau2_std=0.01):       # nominal time constant of subsystem V2, in h
+
+    #%% Description
+    '''
+    This function is only applicable for a recirculation system according to:
+    Nauman, E. B., Buffham, B. A. (1983), Mixing in continuous flow systems. Wiley, New York, ISBN: 978-0471861911, page: 21.
+    
+    Assumption:
+        - Recirculation between two subsystems of a system to be calculated
+        - subsystems are fully mixed -> nominal time constant of the subsystems equals their mean air age
+        - comparing ages and time constants between the subsystems they are usually not equal 
+    '''
+    
+    #%% Neccessary packages
+    from uncertainties import ufloat
+    import sympy as sym
+    import numpy as np
+    # from sympy import init_printing
+    # from sympy import symbols
+    # # from sympy import Eq
+    # # from sympy import Rational
+    
+    #%% Define parameters including uncertainty
+    Vdt12 = [ufloat(Vdt12, Vdt12_std), sym.Symbol(r'\dot{V}_{12}')]             # volume flow entering and leaving the whole system V12, in m³/h 
+    Vdt2 = [ufloat(Vdt2, Vdt2_std), sym.Symbol(r'\dot{V}_{2}')]                 # volume flow of the backfeed subsystem V2, in m³/h
+    tau1 = [ufloat(tau1, tau1_std), sym.Symbol('tau1')]                         # nominal time constant of subsystem V1, in h
+    tau2 = [ufloat(tau2, tau2_std), sym.Symbol('tau2')]                         # nominal time constant of subsystem V2, in h
+    
+    s = sym.Symbol('s')                                                         # frequency parameter of a Laplace-transform, in 1/h
+        
+    #%% Equation
+    tau12 = [None]*4
+    variance12 = [None]*4
+    skew12 = [None]*4
+    kurtosis12 = [None]*4
+    
+    f1 = 1/(tau1[1]*s+1)                                                           # Respones function of subsystem 1
+    f2 = 1/(tau2[1]*s+1)                                                           # Respones function of subsystem 2
+    f12 = f1/(1+Vdt2[1]/Vdt12[1]*(1-f1*f2))                                           # Respones function of system 12
+    f12ln = sym.ln(f12)
+    
+    #%%% Sympy expressions
+    #%%%% 1st kumulant = 1st moment of the propability distribution = tau12
+    d1f12lnds1 = f12ln.diff(s)
+    tau12[1] = np.power(-1,1)*d1f12lnds1.subs({s:0})                               # mean value, tau in h
+    
+    #%%%% 2nd kumulant = 1st central moment of the propability distribution = variance12
+    d2f12lnds2 = d1f12lnds1.diff(s)
+    variance12[1] = np.power(-1,2)*d2f12lnds2.subs({s:0})                          # variance, sigma in h^2
+    variance12[3] = variance12[1]/np.power(tau12[1],2)                                 # dimensionless variance, sigma* in -
+    
+    #%%%% 3rd kumulant = 2nd central moment of the propability distribution = skew12
+    d3f12lnds3 = d2f12lnds2.diff(s)
+    skew12[1] = np.power(-1,3)*d3f12lnds3.subs({s:0})                              # skewness, mu3 in h^3
+    skew12[3] = skew12[1]/np.power(tau12[1],3)                                         # dimensionless skewness, mu3* in -
+    
+    #%%%% 4th kumulant lead to 3rd central moment of the propability distribution = kurtosis12
+    d4f12lnds4 = d3f12lnds3.diff(s)
+    kurtosis12[1] = np.power(-1,4)*d4f12lnds4.subs({s:0})+3*np.power(variance12[1],2) # kurtosis, mu4 in h^4
+    kurtosis12[3] = kurtosis12[1]/np.power(tau12[1],4)                                 # dimensionless kurtosis, mu4* in -
+    
+    #%%% Calculations including uncertainties
+    #%%%% 1st kumulant = 1st moment of the propability distribution = tau12
+    tau12[0] = tau1[0]+(Vdt2[0]*(tau1[0]+tau2[0]))/Vdt12[0]
+    
+    #%%%% 2nd kumulant = 2nd central moment of the propability distribution = variance12
+    a = 2*np.power(tau1[0],2)
+    b = + tau1[0]*(-tau1[0] - (Vdt2[0]*(tau1[0]+tau2[0]))/Vdt12[0])
+    c = + (2*Vdt2[0]*tau1[0]*(tau1[0]+tau2[0]))/Vdt12[0]
+    d = + Vdt2[0]/Vdt12[0]*(-tau1[0] - (Vdt2[0]*(tau1[0]+tau2[0]))/Vdt12[0])*(tau1[0]+tau2[0])
+    e = - Vdt2[0]/Vdt12[0]*(-2*np.power(tau1[0],2)-2*tau1[0]*tau2[0]-2*np.power(tau2[0],2))
+    f = + 2*np.power(Vdt2[0]/Vdt12[0],2)*np.power((tau1[0]+tau2[0]),2)
+    variance12[0] = np.sum([a,b,c,d,e,f])
+    variance12[2] = variance12[0]/np.power(tau12[0],2)              
+    
+    #%%%% 3rd kumulant = 3nd central moment of the propability distribution = skew12
+    '''
+    For now these values do not have a propper uncertainty evaluation!
+    '''
+    skew12[0] = skew12[1].subs({tau1[1]:tau1[0].n, tau2[1]:tau2[0].n, Vdt2[1]:Vdt2[0].n, Vdt12[1]:Vdt12[0].n})
+    skew12[0] = float(sym.Float(skew12[0]))
+    skew12[0] = ufloat(skew12[0],9999,'For now this value does not have a propper uncertainty evaluation!')
+    skew12[2] = skew12[3].subs({tau1[1]:tau1[0].n, tau2[1]:tau2[0].n, Vdt2[1]:Vdt2[0].n, Vdt12[1]:Vdt12[0].n})
+    skew12[2] = float(sym.Float(skew12[2]))
+    skew12[2] = ufloat(skew12[2],9999,'For now this value does not have a propper uncertainty evaluation!')
+    
+    #%%%% 4th kumulant lead to 4th central moment of the propability distribution = kurtosis12
+    '''
+    For now these values do not have a propper uncertainty evaluation!
+    '''
+    kurtosis12[0] = kurtosis12[1].subs({tau1[1]:tau1[0].n, tau2[1]:tau2[0].n, Vdt2[1]:Vdt2[0].n, Vdt12[1]:Vdt12[0].n})
+    kurtosis12[0] = float(sym.Float(kurtosis12[0]))
+    kurtosis12[0] = ufloat(kurtosis12[0],9999,'For now this value does not have a propper uncertainty evaluation!')
+    kurtosis12[2] = kurtosis12[3].subs({tau1[1]:tau1[0].n, tau2[1]:tau2[0].n, Vdt2[1]:Vdt2[0].n, Vdt12[1]:Vdt12[0].n})
+    kurtosis12[2] = float(sym.Float(kurtosis12[2]))
+    kurtosis12[2] = ufloat(kurtosis12[2],9999,'For now this value does not have a propper uncertainty evaluation!')
+    
+    #%% Summarise in a dataframe
+    RecycSys = pd.DataFrame([{'tau in h': tau12[0].n, 'std tau in h': tau12[0].s,
+                        'sigma² in h²': variance12[0].n, 'std sigma² in h²': variance12[0].s, '(sigma²)* in -': variance12[2].n, 'std (sigma²)* in -': variance12[2].s, 
+                        'mu3 in h³': skew12[0].n, 'std mu3 in h³': skew12[0].s, 'mu3* in -': skew12[2].n, 'std mu3* in -': skew12[2].s,
+                        'mu4 in h³': kurtosis12[0].n, 'std mu4 in h³': kurtosis12[0].s, 'mu4* in -': kurtosis12[2].n, 'std mu4* in -': kurtosis12[2].s,
+                        }])
+
+    return RecycSys
+
+#%% recirculation ratio
+def recirculation_ratio(S, S_std,        # volume flow of the ventilated space, in m³/h            
+                        epsilonabs, epsilonabs_std,          # volume flow of the short-cut volume, in m³/h
+                        ):
+    #%% Description
+    '''
+    See equation 16 of Federspiel '99':
+    Federspiel, C. C. (1999), Air-change effectiveness: theory and calculation 
+    methods. Indoor Air 9/1, S.47–56, DOI: 10.1111/j.1600-0668.1999.t01-3-00008.x.
+    
+    Federspiel called its factor "S" short-cut ratio however he redefined it 
+    later on in the paper and "modeled it by assuming that ... S<0". In fact
+    this is the amount of volume flow stagnating inside the volume.
+    
+    '''
+    
+    #%% Neccessary packages
+    from uncertainties import ufloat
+    
+    from sympy import init_printing
+    from sympy import Symbol
+    
+    #%% Define parameters including uncertainty
+    S = [ufloat(S, S_std), Symbol(r'S')]
+    epsilonabs = [ufloat(epsilonabs, epsilonabs_std), Symbol(r'\varepsilon^{a}')]
+    
+    #%% Equation
+    R = [None]*2
+    
+    R[0] = (2*epsilonabs[0]+S[0]-1)/(2*epsilonabs[0]*S[0])*100
+    R[1] = (2*epsilonabs[1]+S[1]-1)/(2*epsilonabs[1]*S[1])*100
+    
+    #%% Summarise in a dataframe
+    R = pd.DataFrame([{'Rezirkulation in %Vdt': R[0].n, 'std Rezirkulation in %Vdt': R[0].s}])
+
+    return R
 # def plot_resitimes(tav):
     
 #     pd.options.plotting.backend = "plotly" # NOTE: This changes the plot backend which should be resetted after it is not needed anymore. Otherwise it will permanently cause problems in future, since it is a permanent change.
@@ -1993,52 +2387,92 @@ def short_cut_stagnation_ratio(Vdt23, Vdt23_std,        # volume flow of the ven
 
 """
 
-summary = summary_resitime_vflow(experiment = "W_I_e0_Herdern", reset=False)
 
-tav2=summary[8]['av t2 in s'].loc[0]
-tav2_std=summary[8]['std av t2 in s'].loc[0]
-Vdt23=summary[2]['volume_flow'].loc[0]
-Vdt23_std=summary[2]['std_volume_flow'].loc[0]
-V23=summary[1]['Volume V23 in m³'].loc[0]
-V23_std=summary[1]['std Volume V23 in m³'].loc[0]
-alphaav3=summary[3]['av restime_3 in h'].loc[0]/2
-alphaav3_std=summary[3]['std av restime_3 in h'].loc[0]/2
+# EE = exchange_efficiency(tau=1.0,  tau_std=99.9,
+#                         tav=0.0,  tav_std=9.99,
+#                         alphaav=0.0, alphaav_std=9.99,
+#                         n=0.0, n_std=9.99,
+#                         navex=0.0, navex_std=9.99,
+#                         navr=0.0, navr_std=9.99,
+#                         sigma_dimless=1.0,  sigma_dimless_std=9.99)
+
+# summary = summary_resitime_vflow(experiment = "W_I_e0_Herdern", reset=False)
+
+# RecycSys = recyclesystem(Vdt12=summary[2]['volume_flow'].loc[0], Vdt12_std=summary[2]['std_volume_flow'].loc[0],     # volume flow entering and leaving the whole system V12, in m³/h           
+#                   Vdt2=summary[2]['volume flow Vdt3 in m³/h'].loc[0], Vdt2_std=summary[2]['std volume flow Vdt3 in m³/h'].loc[0],       # volume flow of the backfeed subsystem V2, in m³/h
+#                   tau1=summary[10]['tau2 in h'].loc[0], tau1_std=summary[10]['std tau2 in h'].loc[0],   # nominal time constant of subsystem V1, in h
+#                   tau2=summary[10]['tau3 in h'].loc[0], tau2_std=summary[10]['std tau3 in h'].loc[0])
 
 
-V2 = short_cut_volume(tav2 = tav2, tav2_std = tav2_std,            
-                     Vdt23 = Vdt23, Vdt23_std = Vdt23_std,          
-                     V23 = V23, V23_std = V23_std,             
-                     alphaav3 = alphaav3, alphaav3_std = alphaav3_std)
+
+# tav2=summary[8]['av t2 in s'].loc[0]
+# tav2_std=summary[8]['std av t2 in s'].loc[0]
+# Vdt23=summary[2]['volume_flow'].loc[0]
+# Vdt23_std=summary[2]['std_volume_flow'].loc[0]
+# V23=summary[1]['Volume V23 in m³'].loc[0]
+# V23_std=summary[1]['std Volume V23 in m³'].loc[0]
+# alphaav3=summary[3]['av restime_3 in h'].loc[0]/2
+# alphaav3_std=summary[3]['std av restime_3 in h'].loc[0]/2
+
+
+# V2 = short_cut_volume(tav2 = tav2, tav2_std = tav2_std,            
+#                       Vdt23 = Vdt23, Vdt23_std = Vdt23_std,          
+#                       V23 = V23, V23_std = V23_std,             
+#                       alphaav3 = alphaav3, alphaav3_std = alphaav3_std)
 
 experiments = ["S_I_e0_Herdern", "S_H_e0_Herdern", "W_I_e0_Herdern","W_H_e0_Herdern",
-               "S_H_e0_ESHL","S_I_e0_ESHL",] #"W_H_e0_ESHL", "W_I_e0_ESHL"
+                "S_H_e0_ESHL","S_I_e0_ESHL",] #"W_H_e0_ESHL", "W_I_e0_ESHL"
 
 summaryE = []
 reistimesE = pd.DataFrame(columns=([0,
- 'av restime_3 in h',
- 'std av restime_3 in h',
- 'av t1 in s',
- 'std av t1 in s',
- 'av t2 in s',
- 'std av t2 in s']))
+  'av restime_3 in h',
+  'std av restime_3 in h',
+  'av t1 in s',
+  'std av t1 in s',
+  'av t2 in s',
+  'std av t2 in s']))
+ratiosE = pd.DataFrame(columns=([0,
+                                  'Kurzschluss in %Vdt', 'std Kurzschluss in %Vdt',
+                                  'Stagnation in %Vdt', 'std Stagnation in %Vdt']))
+EEVdt = pd.DataFrame(columns=([0,
+                                  'epsilon in %t', 'std epsilon in %t',
+                                  'volume_flow', 'std_volume_flow',
+                                  'n in 1/h', 'std n in 1/h']))
+
 for e in experiments:
     summary = summary_resitime_vflow(e)
     new_row = pd.DataFrame(columns=([0,
-         'av restime_3 in h',
-         'std av restime_3 in h',
-         'av t1 in s',
-         'std av t1 in s',
-         'av t2 in s',
-         'std av t2 in s']))
+          'av restime_3 in h',
+          'std av restime_3 in h',
+          'av t1 in s',
+          'std av t1 in s',
+          'av t2 in s',
+          'std av t2 in s']))
     new_row = pd.concat([pd.Series(summary[0]), summary[3], summary[7], summary[8]], join="outer", axis=1)
     reistimesE = reistimesE.append(new_row)
+    
+    new_row2 = pd.DataFrame(columns=([0,
+                                  'Kurzschluss in %Vdt', 'std Kurzschluss in %Vdt',
+                                  'Stagnation in %Vdt', 'std Stagnation in %Vdt']))
+    new_row2 = pd.concat([pd.Series(summary[0]), summary[9]], join="outer", axis=1)
+    ratiosE = ratiosE.append(new_row2)
+    new_row3 = pd.DataFrame(columns=([0,
+                                  'epsilon in %t', 'std epsilon in %t',
+                                  'volume_flow', 'std_volume_flow',
+                                  'n in 1/h', 'std n in 1/h']))
+    new_row3 = pd.concat([pd.Series(summary[0]), summary[2].iloc[:,[0,1]], summary[12].iloc[:,[0,1,8,9]]], join="outer", axis=1)
+    EEVdt = EEVdt.append(new_row3)
+    
     summaryE.append(summary)
 
-reistimesE['av restime_3 in h'] = reistimesE['av restime_3 in h'] * 3600
-reistimesE['std av restime_3 in h'] = reistimesE['std av restime_3 in h'] * 3600
-reistimesE = reistimesE.rename(columns={0: 'Experiment','av restime_3 in h': 'av t3 in s', 'std av restime_3 in h': 'std av t3 in s'})
-reistimesE = reistimesE.reset_index()
-del reistimesE['index']
+# reistimesE['av restime_3 in h'] = reistimesE['av restime_3 in h'] * 3600
+# reistimesE['std av restime_3 in h'] = reistimesE['std av restime_3 in h'] * 3600
+# reistimesE = reistimesE.rename(columns={0: 'Experiment','av restime_3 in h': 'av t3 in s', 'std av restime_3 in h': 'std av t3 in s'})
+# reistimesE = reistimesE.reset_index()
+# del reistimesE['index']
+
+# ratiosE = ratiosE.reset_index()
+# del ratiosE['index']
     
 
 
